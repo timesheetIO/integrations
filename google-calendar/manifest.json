@@ -1,0 +1,154 @@
+{
+  "id": "google-calendar-sync",
+  "name": "Google Calendar Sync",
+  "version": "1.0.0",
+  "description": "Synchronize Timesheet tasks with Google Calendar",
+  "longDescription": "Bidirectional synchronization between Timesheet tasks and Google Calendar events.",
+  "icon": "google-calendar",
+  "category": "calendar",
+  "tags": ["sync", "timesheet", "google-calendar", "calendar"],
+  "dataAccess": ["projects", "tasks", "colleagues", "settings"],
+  "externalAuth": [
+    {
+      "id": "google",
+      "type": "oauth2",
+      "oauth": {
+        "authorizeUrl": "https://accounts.google.com/o/oauth2/v2/auth",
+        "tokenUrl": "https://oauth2.googleapis.com/token",
+        "scopes": [
+          "https://www.googleapis.com/auth/calendar.readonly",
+          "https://www.googleapis.com/auth/calendar.events"
+        ]
+      }
+    }
+  ],
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "syncDirection": {
+        "type": "string",
+        "title": "Sync Direction",
+        "enum": ["bidirectional", "timesheet-to-google", "google-to-timesheet"],
+        "default": "bidirectional",
+        "x-ui-widget": "radio"
+      }
+    },
+    "required": ["syncDirection"]
+  },
+  "mappingSchema": {
+    "system": "google-calendar",
+    "mappings": [
+      {
+        "id": "projects",
+        "title": "Calendar Mapping",
+        "description": "Map Timesheet projects to Google Calendars",
+        "localEntity": {
+          "type": "project",
+          "label": "Timesheet Project",
+          "display": "{{title}}"
+        },
+        "externalEntity": {
+          "type": "calendar",
+          "label": "Google Calendar",
+          "fetchAction": "list-external-projects"
+        },
+        "required": true,
+        "minMappings": 1
+      }
+    ]
+  },
+  "triggers": [
+    {
+      "id": "task-changed",
+      "type": "event",
+      "name": "Task Changed",
+      "description": "Sync task create/update/delete events to Google Calendar",
+      "events": ["task.create", "task.update", "task.delete"],
+      "configurable": true,
+      "actionId": "sync-task-to-external"
+    },
+    {
+      "id": "integration-webhook",
+      "type": "webhook",
+      "name": "Google Calendar Webhook",
+      "description": "Receive inbound changes from Google Calendar",
+      "configurable": false,
+      "actionId": "handle-webhook",
+      "webhook": {}
+    },
+    {
+      "id": "full-sync",
+      "type": "schedule",
+      "name": "Scheduled Full Sync",
+      "description": "Run incremental synchronization for all mapped calendars",
+      "schedule": "0 2 * * *",
+      "timezone": "UTC",
+      "configurable": true,
+      "actionId": "run-full-sync"
+    },
+    {
+      "id": "manual-sync",
+      "type": "user_action",
+      "name": "Manual Sync",
+      "description": "Trigger a sync from settings",
+      "userAction": {
+        "label": "Sync Now",
+        "placement": "settings"
+      },
+      "actionId": "run-full-sync"
+    }
+  ],
+  "actions": [
+    {
+      "id": "sync-task-to-external",
+      "name": "Sync task to Google Calendar",
+      "handler": "syncTaskToExternal"
+    },
+    {
+      "id": "sync-task-from-external",
+      "name": "Sync task from Google Calendar",
+      "handler": "syncTaskFromExternal",
+      "internal": true
+    },
+    {
+      "id": "handle-webhook",
+      "handler": "handleWebhook",
+      "internal": true
+    },
+    {
+      "id": "run-full-sync",
+      "name": "Run full sync",
+      "handler": "runFullSync"
+    },
+    {
+      "id": "test-connection",
+      "name": "Test connection",
+      "handler": "testConnection"
+    },
+    {
+      "id": "list-external-projects",
+      "handler": "listExternalProjects",
+      "internal": true
+    }
+  ],
+  "pages": [
+    {
+      "id": "dashboard",
+      "title": "Sync Dashboard",
+      "icon": "chart-bar",
+      "layout": "dashboard",
+      "widgets": [
+        {
+          "id": "manual-sync-btn",
+          "type": "action_button",
+          "title": "Manual Sync",
+          "config": {
+            "actionId": "run-full-sync",
+            "label": "Run Full Sync",
+            "variant": "primary"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,185 @@
+{
+  "id": "quickbooks-sync",
+  "name": "QuickBooks Time Sync",
+  "version": "1.0.0",
+  "description": "Synchronize tasks with QuickBooks Online",
+  "longDescription": "Bidirectional synchronization between Timesheet tasks and QuickBooks TimeActivity entries.",
+  "icon": "quickbooks",
+  "category": "accounting",
+  "tags": ["sync", "timesheet", "quickbooks", "time-tracking"],
+  "dataAccess": ["projects", "tasks", "colleagues", "settings"],
+  "externalAuth": [
+    {
+      "id": "quickbooks",
+      "type": "oauth2",
+      "oauth": {
+        "authorizeUrl": "https://appcenter.intuit.com/connect/oauth2",
+        "tokenUrl": "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
+        "scopes": ["com.intuit.quickbooks.accounting"]
+      }
+    }
+  ],
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "syncDirection": {
+        "type": "string",
+        "title": "Sync Direction",
+        "enum": ["bidirectional", "timesheet-to-qb", "qb-to-timesheet"],
+        "default": "bidirectional",
+        "x-ui-widget": "radio"
+      },
+      "sandboxMode": {
+        "type": "boolean",
+        "title": "Use QuickBooks Sandbox",
+        "default": false,
+        "x-ui-help": "Enable for testing against a QuickBooks sandbox company."
+      }
+    },
+    "required": ["syncDirection"]
+  },
+  "mappingSchema": {
+    "system": "quickbooks",
+    "mappings": [
+      {
+        "id": "projects",
+        "title": "Project Mapping",
+        "description": "Map Timesheet projects to QuickBooks customers",
+        "localEntity": {
+          "type": "project",
+          "label": "Timesheet Project",
+          "display": "{{title}}"
+        },
+        "externalEntity": {
+          "type": "customer",
+          "label": "QuickBooks Customer",
+          "fetchAction": "list-external-projects"
+        },
+        "required": true,
+        "minMappings": 1
+      },
+      {
+        "id": "users",
+        "title": "User Mapping",
+        "description": "Map Timesheet users to QuickBooks employees",
+        "localEntity": {
+          "type": "user",
+          "label": "Timesheet User",
+          "display": "{{displayName}}"
+        },
+        "externalEntity": {
+          "type": "employee",
+          "label": "QuickBooks Employee",
+          "fetchAction": "list-external-users"
+        },
+        "required": true,
+        "minMappings": 1
+      }
+    ]
+  },
+  "triggers": [
+    {
+      "id": "task-changed",
+      "type": "event",
+      "name": "Task Changed",
+      "description": "Sync task create/update/delete events to QuickBooks",
+      "events": ["task.create", "task.update", "task.delete"],
+      "configurable": true,
+      "actionId": "sync-task-to-external"
+    },
+    {
+      "id": "integration-webhook",
+      "type": "webhook",
+      "name": "QuickBooks Webhook",
+      "description": "Receive inbound TimeActivity changes",
+      "configurable": false,
+      "actionId": "handle-webhook",
+      "webhook": {
+        "signature": {
+          "header": "intuit-signature",
+          "algorithm": "hmac-sha256",
+          "secretConfigKey": "webhookVerifierToken"
+        }
+      }
+    },
+    {
+      "id": "full-sync",
+      "type": "schedule",
+      "name": "Scheduled Full Sync",
+      "description": "Run a complete reconciliation sync",
+      "schedule": "0 2 * * *",
+      "timezone": "UTC",
+      "configurable": true,
+      "actionId": "run-full-sync"
+    },
+    {
+      "id": "manual-sync",
+      "type": "user_action",
+      "name": "Manual Sync",
+      "description": "Run a full sync from settings",
+      "userAction": {
+        "label": "Sync Now",
+        "placement": "settings"
+      },
+      "actionId": "run-full-sync"
+    }
+  ],
+  "actions": [
+    {
+      "id": "sync-task-to-external",
+      "name": "Sync task to QuickBooks",
+      "handler": "syncTaskToExternal"
+    },
+    {
+      "id": "sync-task-from-external",
+      "name": "Sync task from QuickBooks",
+      "handler": "syncTaskFromExternal",
+      "internal": true
+    },
+    {
+      "id": "handle-webhook",
+      "handler": "handleWebhook",
+      "internal": true
+    },
+    {
+      "id": "run-full-sync",
+      "name": "Run full sync",
+      "handler": "runFullSync"
+    },
+    {
+      "id": "test-connection",
+      "name": "Test connection",
+      "handler": "testConnection"
+    },
+    {
+      "id": "list-external-projects",
+      "handler": "listExternalProjects",
+      "internal": true
+    },
+    {
+      "id": "list-external-users",
+      "handler": "listExternalUsers",
+      "internal": true
+    }
+  ],
+  "pages": [
+    {
+      "id": "dashboard",
+      "title": "Sync Dashboard",
+      "icon": "chart-bar",
+      "layout": "dashboard",
+      "widgets": [
+        {
+          "id": "manual-sync-btn",
+          "type": "action_button",
+          "title": "Manual Sync",
+          "config": {
+            "actionId": "run-full-sync",
+            "label": "Run Full Sync",
+            "variant": "primary"
+          }
+        }
+      ]
+    }
+  ]
+}

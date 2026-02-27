@@ -1,0 +1,150 @@
+{
+  "id": "clickup-sync",
+  "name": "ClickUp Sync",
+  "version": "1.0.0",
+  "description": "Timesheet ClickUp Sync plugin integration",
+  "category": "project-management",
+  "tags": ["sync", "timesheet", "clickup"],
+  "dataAccess": ["projects", "tasks", "colleagues", "settings"],
+  "externalAuth": [
+    {
+      "id": "clickup",
+      "type": "oauth2",
+      "oauth": {
+        "authorizeUrl": "https://example.com/oauth/authorize",
+        "tokenUrl": "https://example.com/oauth/token",
+        "scopes": ["read", "write"]
+      }
+    }
+  ],
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "syncDirection": {
+        "type": "string",
+        "title": "Sync Direction",
+        "enum": ["bidirectional", "timesheet-to-external", "external-to-timesheet"],
+        "default": "bidirectional",
+        "x-ui-widget": "radio"
+      }
+    },
+    "required": ["syncDirection"]
+  },
+  "mappingSchema": {
+    "system": "clickup",
+    "mappings": [
+      {
+        "id": "projects",
+        "title": "Project Mapping",
+        "description": "Map Timesheet projects to ClickUp Sync projects",
+        "localEntity": {
+          "type": "project",
+          "label": "Timesheet Project",
+          "display": "{{title}}"
+        },
+        "externalEntity": {
+          "type": "project",
+          "label": "ClickUp Sync Project",
+          "fetchAction": "list-external-projects"
+        },
+        "required": true,
+        "minMappings": 1
+      }
+    ]
+  },
+  "triggers": [
+    {
+      "id": "task-created",
+      "type": "event",
+      "name": "Task Created",
+      "description": "Sync when a new task is created",
+      "events": ["task.create"],
+      "configurable": true
+    },
+    {
+      "id": "integration-webhook",
+      "type": "webhook",
+      "name": "ClickUp Sync Webhook",
+      "description": "Receive inbound changes from ClickUp Sync",
+      "configurable": false,
+      "webhook": {
+        "signature": {
+          "header": "x-timesheet-signature",
+          "algorithm": "hmac-sha256",
+          "secretConfigKey": "webhookSecret"
+        }
+      }
+    },
+    {
+      "id": "full-sync",
+      "type": "schedule",
+      "name": "Scheduled Full Sync",
+      "description": "Run background synchronization",
+      "schedule": "0 2 * * *",
+      "timezone": "UTC",
+      "configurable": true
+    },
+    {
+      "id": "manual-sync",
+      "type": "user_action",
+      "name": "Manual Sync",
+      "description": "Trigger a sync from settings",
+      "userAction": {
+        "label": "Sync Now",
+        "placement": "settings"
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "sync-task-to-external",
+      "name": "Sync task to ClickUp Sync",
+      "handler": "syncTaskToExternal"
+    },
+    {
+      "id": "sync-task-from-external",
+      "name": "Sync task from ClickUp Sync",
+      "handler": "syncTaskFromExternal"
+    },
+    {
+      "id": "handle-webhook",
+      "handler": "handleWebhook",
+      "internal": true
+    },
+    {
+      "id": "run-full-sync",
+      "name": "Run full sync",
+      "handler": "runFullSync"
+    },
+    {
+      "id": "test-connection",
+      "name": "Test connection",
+      "handler": "testConnection"
+    },
+    {
+      "id": "list-external-projects",
+      "handler": "listExternalProjects",
+      "internal": true
+    }
+  ],
+  "pages": [
+    {
+      "id": "dashboard",
+      "title": "Sync Dashboard",
+      "icon": "chart-bar",
+      "layout": "dashboard",
+      "widgets": [
+        {
+          "id": "manual-sync-btn",
+          "type": "action_button",
+          "title": "Manual Sync",
+          "config": {
+            "actionId": "run-full-sync",
+            "label": "Run Full Sync",
+            "variant": "primary"
+          }
+        }
+      ]
+    }
+  ]
+}
