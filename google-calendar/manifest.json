@@ -1,13 +1,13 @@
 {
   "id": "google-calendar-sync",
   "name": "Google Calendar Sync",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Synchronize Timesheet tasks with Google Calendar",
   "longDescription": "Bidirectional synchronization between Timesheet tasks and Google Calendar events.",
   "icon": "google-calendar",
   "category": "calendar",
   "tags": ["sync", "timesheet", "google-calendar", "calendar"],
-  "dataAccess": ["projects", "tasks", "colleagues", "settings"],
+  "dataAccess": ["projects", "tasks"],
   "externalAuth": [
     {
       "id": "google",
@@ -138,6 +138,21 @@
       "icon": "chart-bar",
       "layout": "dashboard",
       "widgets": [
+        {
+          "id": "last-sync",
+          "type": "sync_summary",
+          "title": "Last Sync"
+        },
+        {
+          "id": "sync-stats",
+          "type": "sync_stats",
+          "title": "Sync Statistics"
+        },
+        {
+          "id": "connection-health",
+          "type": "connection_health",
+          "title": "Connection Health"
+        },
         {
           "id": "manual-sync-btn",
           "type": "action_button",

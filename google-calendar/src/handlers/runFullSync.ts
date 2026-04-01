@@ -1,6 +1,6 @@
 import { defineHandler } from '@timesheet/integration-sdk';
 import { GoogleCalendarConfig } from '../lib/types';
-import { GoogleCalendarSyncResult, runGoogleCalendarFullSync } from '../lib/taskSync';
+import { GoogleCalendarSyncResult, runGoogleCalendarFullSync, ensureWatchChannels } from '../lib/taskSync';
 
 export const runFullSync = defineHandler<void, GoogleCalendarSyncResult, GoogleCalendarConfig>(
   async (_input, context) => {
@@ -9,6 +9,11 @@ export const runFullSync = defineHandler<void, GoogleCalendarSyncResult, GoogleC
       syncDirection: context.config?.syncDirection ?? 'bidirectional'
     });
 
-    return await runGoogleCalendarFullSync(context);
+    const result = await runGoogleCalendarFullSync(context);
+
+    // Ensure watch channels are active for inbound push notifications
+    await ensureWatchChannels(context);
+
+    return result;
   }
 );

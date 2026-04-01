@@ -3,7 +3,6 @@ import { TaskDto } from '@timesheet/integration-sdk';
 export interface QuickBooksConfig {
   syncDirection?: 'bidirectional' | 'timesheet-to-qb' | 'qb-to-timesheet' | 'timesheet-to-external' | 'external-to-timesheet';
   sandboxMode?: boolean;
-  realmId?: string;
 }
 
 export interface QuickBooksRef {

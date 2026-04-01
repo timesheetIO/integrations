@@ -27,6 +27,11 @@ export async function syncTaskToGoogleCalendar(
   input: GoogleCalendarSyncInput,
   context: IntegrationContext<GoogleCalendarConfig>
 ): Promise<GoogleCalendarSyncResult> {
+  const syncDirection = context.config?.syncDirection ?? 'bidirectional';
+  if (syncDirection === 'google-to-timesheet' || syncDirection === 'external-to-timesheet') {
+    return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'sync-direction-mismatch' } };
+  }
+
   const taskId = resolveTaskId(input);
   if (!taskId) {
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'missing-task-id' } };
@@ -79,7 +84,13 @@ export async function syncTaskToGoogleCalendar(
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'already-deleted' } };
   }
 
-  const payload = buildGoogleEventPayload(task);
+  let payload: Record<string, unknown>;
+  try {
+    payload = buildGoogleEventPayload(task);
+  } catch (err) {
+    context.logger.warn('Failed to build event payload', { taskId: task.id, error: String(err) });
+    return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'invalid-task-data', taskId: task.id } };
+  }
   let externalEvent: GoogleCalendarEvent;
 
   if (taskMapping?.externalId) {
@@ -128,26 +139,31 @@ export async function syncTaskToGoogleCalendar(
 export async function runGoogleCalendarFullSync(
   context: IntegrationContext<GoogleCalendarConfig>
 ): Promise<GoogleCalendarSyncResult> {
+  const syncDirection = context.config?.syncDirection ?? 'bidirectional';
+  const allowInbound = syncDirection !== 'timesheet-to-google' && syncDirection !== 'timesheet-to-external';
+
   const projectMappings = await context.mappings.list({ system: SYSTEM, entity: PROJECT_ENTITY });
   if (projectMappings.length === 0) {
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'missing-project-mappings' } };
   }
 
   let syncedCount = 0;
-  for (const mapping of projectMappings) {
-    if (!mapping.externalId) {
-      continue;
-    }
+  if (allowInbound) {
+    for (const mapping of projectMappings) {
+      if (!mapping.externalId) {
+        continue;
+      }
 
-    const perCalendarCount = await syncCalendar(context, mapping);
-    syncedCount += perCalendarCount;
+      const perCalendarCount = await syncCalendar(context, mapping);
+      syncedCount += perCalendarCount;
+    }
   }
 
   return {
     system: SYSTEM,
     status: 'completed',
     syncedCount,
-    details: { calendarCount: projectMappings.length }
+    details: { calendarCount: projectMappings.length, syncDirection }
   };
 }
 
@@ -155,6 +171,11 @@ export async function handleGoogleWebhook(
   input: GoogleCalendarSyncInput,
   context: IntegrationContext<GoogleCalendarConfig>
 ): Promise<GoogleCalendarSyncResult> {
+  const syncDirection = context.config?.syncDirection ?? 'bidirectional';
+  if (syncDirection === 'timesheet-to-google' || syncDirection === 'timesheet-to-external') {
+    return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'sync-direction-mismatch' } };
+  }
+
   const resourceState = getHeader(input, 'x-goog-resource-state')?.toLowerCase();
   if (resourceState === 'sync') {
     return {
@@ -354,15 +375,23 @@ async function syncSingleGoogleEvent(
 }
 
 function toTaskDateRange(event: GoogleCalendarEvent): { startDateTime: string; endDateTime: string } | null {
-  const startDateTime = event.start?.dateTime;
-  const endDateTime = event.end?.dateTime;
+  let startRaw = event.start?.dateTime;
+  let endRaw = event.end?.dateTime;
 
-  if (!startDateTime || !endDateTime) {
+  // Handle all-day events (date field instead of dateTime)
+  if (!startRaw && event.start?.date) {
+    startRaw = `${event.start.date}T00:00:00Z`;
+  }
+  if (!endRaw && event.end?.date) {
+    endRaw = `${event.end.date}T00:00:00Z`;
+  }
+
+  if (!startRaw || !endRaw) {
     return null;
   }
 
-  const start = new Date(startDateTime);
-  const end = new Date(endDateTime);
+  const start = new Date(startRaw);
+  const end = new Date(endRaw);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
     return null;
   }
@@ -483,6 +512,87 @@ function getHeader(input: GoogleCalendarSyncInput, name: string): string | undef
 
   const value = mergedHeaders[key];
   return value === undefined || value === null ? undefined : String(value);
+}
+
+export async function ensureWatchChannels(
+  context: IntegrationContext<GoogleCalendarConfig>
+): Promise<void> {
+  // The webhook URL is passed via the context metadata (set by the backend runtime)
+  const contextAny = context as unknown as Record<string, unknown>;
+  const metadata = contextAny['metadata'] as Record<string, unknown> | undefined;
+  const webhooks = metadata?.['webhooks'] as Record<string, string> | undefined;
+  const webhookUrl = webhooks?.['integration-webhook'];
+  if (!webhookUrl) {
+    context.logger.info('No webhook URL available — skipping watch channel registration');
+    return;
+  }
+
+  const projectMappings = await context.mappings.list({ system: SYSTEM, entity: PROJECT_ENTITY });
+  if (projectMappings.length === 0) {
+    return;
+  }
+
+  const client = createClient(context);
+  const now = Date.now();
+  const watchTtlSeconds = 7 * 24 * 60 * 60; // 7 days
+
+  for (const mapping of projectMappings) {
+    if (!mapping.externalId) {
+      continue;
+    }
+
+    const metadata = mapping.metadata ?? {};
+    const existingExpiration = readMetadataString(metadata, 'watchExpiration');
+    if (existingExpiration) {
+      const expiresAt = Number(existingExpiration);
+      if (expiresAt > now + 3600_000) {
+        // Watch still has > 1 hour remaining, skip
+        continue;
+      }
+
+      // Stop the old channel before creating a new one
+      const oldChannelId = readMetadataString(metadata, 'watchChannelId');
+      const oldResourceId = readMetadataString(metadata, 'watchResourceId');
+      if (oldChannelId && oldResourceId) {
+        try {
+          await client.stopWatch(oldChannelId, oldResourceId);
+        } catch (err) {
+          context.logger.warn('Failed to stop old watch channel', { calendarId: mapping.externalId, error: String(err) });
+        }
+      }
+    }
+
+    try {
+      const channelId = `ts-${context.installationId}-${mapping.externalId}-${now}`.substring(0, 64);
+      const watchResult = await client.watchEvents(mapping.externalId, channelId, webhookUrl, watchTtlSeconds);
+
+      await context.mappings.upsert({
+        system: SYSTEM,
+        entity: PROJECT_ENTITY,
+        localId: mapping.localId,
+        externalId: mapping.externalId,
+        externalLabel: mapping.externalLabel,
+        metadata: {
+          ...metadata,
+          watchChannelId: channelId,
+          watchResourceId: watchResult.resourceId ?? '',
+          watchExpiration: watchResult.expiration ?? String(now + watchTtlSeconds * 1000)
+        },
+        syncStatus: 'SYNCED'
+      });
+
+      context.logger.info('Registered watch channel', {
+        calendarId: mapping.externalId,
+        channelId,
+        expiration: watchResult.expiration
+      });
+    } catch (err) {
+      context.logger.warn('Failed to register watch channel', {
+        calendarId: mapping.externalId,
+        error: String(err)
+      });
+    }
+  }
 }
 
 function readMetadataString(metadata: Record<string, unknown>, key: string): string | undefined {

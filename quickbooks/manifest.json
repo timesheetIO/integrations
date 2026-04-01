@@ -1,13 +1,13 @@
 {
   "id": "quickbooks-sync",
   "name": "QuickBooks Time Sync",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Synchronize tasks with QuickBooks Online",
   "longDescription": "Bidirectional synchronization between Timesheet tasks and QuickBooks TimeActivity entries.",
   "icon": "quickbooks",
   "category": "accounting",
   "tags": ["sync", "timesheet", "quickbooks", "time-tracking"],
-  "dataAccess": ["projects", "tasks", "colleagues", "settings"],
+  "dataAccess": ["projects", "tasks", "colleagues"],
   "externalAuth": [
     {
       "id": "quickbooks",
@@ -169,6 +169,21 @@
       "icon": "chart-bar",
       "layout": "dashboard",
       "widgets": [
+        {
+          "id": "last-sync",
+          "type": "sync_summary",
+          "title": "Last Sync"
+        },
+        {
+          "id": "sync-stats",
+          "type": "sync_stats",
+          "title": "Sync Statistics"
+        },
+        {
+          "id": "connection-health",
+          "type": "connection_health",
+          "title": "Connection Health"
+        },
         {
           "id": "manual-sync-btn",
           "type": "action_button",

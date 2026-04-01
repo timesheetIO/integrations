@@ -100,6 +100,41 @@ export class GoogleCalendarClient {
     );
   }
 
+  async watchEvents(calendarId: string, channelId: string, webhookUrl: string, ttlSeconds = 604800): Promise<{
+    id?: string;
+    resourceId?: string;
+    expiration?: string;
+  }> {
+    return this.request<{ id?: string; resourceId?: string; expiration?: string }>(
+      'POST',
+      `/calendars/${encodeURIComponent(calendarId)}/events/watch`,
+      undefined,
+      {
+        id: channelId,
+        type: 'web_hook',
+        address: webhookUrl,
+        params: { ttl: String(ttlSeconds) }
+      }
+    );
+  }
+
+  async stopWatch(channelId: string, resourceId: string): Promise<void> {
+    const token = await this.getAccessToken();
+    const response = await fetch('https://www.googleapis.com/calendar/v3/channels/stop', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ id: channelId, resourceId })
+    });
+    // 404 means channel already expired — not an error
+    if (!response.ok && response.status !== 404) {
+      const errorText = await response.text();
+      throw new Error(`Google Calendar API channels/stop failed (${response.status}): ${errorText}`);
+    }
+  }
+
   private async request<T>(
     method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     path: string,

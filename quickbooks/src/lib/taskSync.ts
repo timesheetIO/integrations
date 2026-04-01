@@ -29,6 +29,11 @@ export async function syncTaskToQuickBooks(
   input: SyncInput,
   context: IntegrationContext<QuickBooksConfig>
 ): Promise<QuickBooksSyncResult> {
+  const syncDirection = context.config?.syncDirection ?? 'bidirectional';
+  if (syncDirection === 'qb-to-timesheet' || syncDirection === 'external-to-timesheet') {
+    return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'sync-direction-mismatch' } };
+  }
+
   const taskId = resolveTaskId(input);
   if (!taskId) {
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'missing-task-id' } };
@@ -90,7 +95,13 @@ export async function syncTaskToQuickBooks(
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'already-deleted' } };
   }
 
-  const payload = buildTimeActivityPayload(task, projectMapping.externalId, userMapping.externalId);
+  let payload: Record<string, unknown>;
+  try {
+    payload = buildTimeActivityPayload(task, projectMapping.externalId, userMapping.externalId);
+  } catch (err) {
+    context.logger.warn('Failed to build time activity payload', { taskId: task.id, error: String(err) });
+    return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'invalid-task-data', taskId: task.id } };
+  }
   let external: QuickBooksTimeActivity;
 
   if (taskMapping?.externalId) {
@@ -138,6 +149,9 @@ export async function syncTaskToQuickBooks(
 export async function runQuickBooksFullSync(
   context: IntegrationContext<QuickBooksConfig>
 ): Promise<QuickBooksSyncResult> {
+  const syncDirection = context.config?.syncDirection ?? 'bidirectional';
+  const allowInbound = syncDirection !== 'timesheet-to-qb' && syncDirection !== 'timesheet-to-external';
+
   const projectMappings = await context.mappings.list({ system: SYSTEM, entity: PROJECT_ENTITY });
   const userMappings = await context.mappings.list({ system: SYSTEM, entity: USER_ENTITY });
 
@@ -152,23 +166,25 @@ export async function runQuickBooksFullSync(
     };
   }
 
-  const client = await createClient(context);
-  const activities = await client.listTimeActivities();
-
-  const projectByExternalId = new Map(projectMappings.map((mapping) => [mapping.externalId, mapping.localId]));
-  const userByExternalId = new Map(userMappings.map((mapping) => [mapping.externalId, mapping.localId]));
-
   let syncedCount = 0;
 
-  for (const activity of activities) {
-    const synced = await syncSingleExternalActivity(
-      activity,
-      context,
-      projectByExternalId,
-      userByExternalId
-    );
-    if (synced) {
-      syncedCount += 1;
+  if (allowInbound) {
+    const client = await createClient(context);
+    const activities = await client.listTimeActivities();
+
+    const projectByExternalId = new Map(projectMappings.map((mapping) => [mapping.externalId, mapping.localId]));
+    const userByExternalId = new Map(userMappings.map((mapping) => [mapping.externalId, mapping.localId]));
+
+    for (const activity of activities) {
+      const synced = await syncSingleExternalActivity(
+        activity,
+        context,
+        projectByExternalId,
+        userByExternalId
+      );
+      if (synced) {
+        syncedCount += 1;
+      }
     }
   }
 
@@ -176,7 +192,7 @@ export async function runQuickBooksFullSync(
     system: SYSTEM,
     status: 'completed',
     syncedCount,
-    details: { scannedCount: activities.length }
+    details: { syncDirection }
   };
 }
 
@@ -184,6 +200,11 @@ export async function handleQuickBooksWebhook(
   input: SyncInput,
   context: IntegrationContext<QuickBooksConfig>
 ): Promise<QuickBooksSyncResult> {
+  const syncDirection = context.config?.syncDirection ?? 'bidirectional';
+  if (syncDirection === 'timesheet-to-qb' || syncDirection === 'timesheet-to-external') {
+    return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'sync-direction-mismatch' } };
+  }
+
   const payload = asWebhookPayload(input?.body);
   const entities = payload?.eventNotifications ?? [];
 
@@ -353,8 +374,7 @@ async function createClient(
 ): Promise<QuickBooksClient> {
   const connectionInfo = await context.credentials.getConnectionInfo(SYSTEM);
   const realmId = realmOverride
-    || connectionInfo?.accountId
-    || context.config?.realmId;
+    || connectionInfo?.accountId;
 
   if (!realmId) {
     throw new Error('QuickBooks realmId/accountId missing. Complete OAuth first.');

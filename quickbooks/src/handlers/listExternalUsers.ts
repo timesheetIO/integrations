@@ -6,7 +6,7 @@ const SYSTEM = 'quickbooks';
 
 async function createClient(context: IntegrationContext<QuickBooksConfig>): Promise<QuickBooksClient> {
   const connectionInfo = await context.credentials.getConnectionInfo(SYSTEM);
-  const realmId = connectionInfo?.accountId || context.config?.realmId;
+  const realmId = connectionInfo?.accountId;
 
   if (!realmId) {
     throw new Error('QuickBooks realmId/accountId missing. Complete OAuth first.');
