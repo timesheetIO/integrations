@@ -1,7 +1,7 @@
 {
   "id": "quickbooks-sync",
   "name": "QuickBooks Time Sync",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Synchronize tasks with QuickBooks Online",
   "longDescription": "Bidirectional synchronization between Timesheet tasks and QuickBooks TimeActivity entries.",
   "icon": "quickbooks",
@@ -81,11 +81,12 @@
     {
       "id": "task-changed",
       "type": "event",
+      "mode": "sync",
       "name": "Task Changed",
       "description": "Sync task create/update/delete events to QuickBooks",
       "events": ["task.create", "task.update", "task.delete"],
       "configurable": true,
-      "actionId": "sync-task-to-external"
+      "actionId": "handle-sync-batch"
     },
     {
       "id": "integration-webhook",
@@ -105,12 +106,14 @@
     {
       "id": "full-sync",
       "type": "schedule",
+      "mode": "sync",
       "name": "Scheduled Full Sync",
       "description": "Run a complete reconciliation sync",
       "schedule": "0 2 * * *",
       "timezone": "UTC",
       "configurable": true,
-      "actionId": "run-full-sync"
+      "events": ["task.create", "task.update", "task.delete"],
+      "actionId": "handle-sync-batch"
     },
     {
       "id": "manual-sync",
@@ -129,6 +132,11 @@
       "id": "sync-task-to-external",
       "name": "Sync task to QuickBooks",
       "handler": "syncTaskToExternal"
+    },
+    {
+      "id": "handle-sync-batch",
+      "name": "Handle sync batch",
+      "handler": "handleSyncBatch"
     },
     {
       "id": "sync-task-from-external",

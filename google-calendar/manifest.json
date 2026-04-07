@@ -1,7 +1,7 @@
 {
   "id": "google-calendar-sync",
   "name": "Google Calendar Sync",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Synchronize Timesheet tasks with Google Calendar",
   "longDescription": "Bidirectional synchronization between Timesheet tasks and Google Calendar events.",
   "icon": "google-calendar",
@@ -18,7 +18,11 @@
         "scopes": [
           "https://www.googleapis.com/auth/calendar.readonly",
           "https://www.googleapis.com/auth/calendar.events"
-        ]
+        ],
+        "authorizationParams": {
+          "access_type": "offline",
+          "prompt": "consent"
+        }
       }
     }
   ],
@@ -61,11 +65,12 @@
     {
       "id": "task-changed",
       "type": "event",
+      "mode": "sync",
       "name": "Task Changed",
       "description": "Sync task create/update/delete events to Google Calendar",
       "events": ["task.create", "task.update", "task.delete"],
       "configurable": true,
-      "actionId": "sync-task-to-external"
+      "actionId": "handle-sync-batch"
     },
     {
       "id": "integration-webhook",
@@ -79,12 +84,14 @@
     {
       "id": "full-sync",
       "type": "schedule",
+      "mode": "sync",
       "name": "Scheduled Full Sync",
       "description": "Run incremental synchronization for all mapped calendars",
       "schedule": "0 2 * * *",
       "timezone": "UTC",
       "configurable": true,
-      "actionId": "run-full-sync"
+      "events": ["task.create", "task.update", "task.delete"],
+      "actionId": "handle-sync-batch"
     },
     {
       "id": "manual-sync",
@@ -103,6 +110,11 @@
       "id": "sync-task-to-external",
       "name": "Sync task to Google Calendar",
       "handler": "syncTaskToExternal"
+    },
+    {
+      "id": "handle-sync-batch",
+      "name": "Handle sync batch",
+      "handler": "handleSyncBatch"
     },
     {
       "id": "sync-task-from-external",
