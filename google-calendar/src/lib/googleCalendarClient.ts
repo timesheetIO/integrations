@@ -120,20 +120,37 @@ export class GoogleCalendarClient {
 
   async stopWatch(channelId: string, resourceId: string): Promise<void> {
     const token = await this.getAccessToken();
-    const response = await fetch('https://www.googleapis.com/calendar/v3/channels/stop', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ id: channelId, resourceId })
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), GoogleCalendarClient.REQUEST_TIMEOUT_MS);
+
+    let response: Response;
+    try {
+      response = await fetch('https://www.googleapis.com/calendar/v3/channels/stop', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ id: channelId, resourceId }),
+        signal: controller.signal
+      });
+    } catch (error) {
+      clearTimeout(timeoutId);
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw new Error(`Google Calendar API channels/stop timed out after ${GoogleCalendarClient.REQUEST_TIMEOUT_MS}ms`);
+      }
+      throw error;
+    }
+    clearTimeout(timeoutId);
+
     // 404 means channel already expired — not an error
     if (!response.ok && response.status !== 404) {
       const errorText = await response.text();
       throw new Error(`Google Calendar API channels/stop failed (${response.status}): ${errorText}`);
     }
   }
+
+  private static readonly REQUEST_TIMEOUT_MS = 30_000;
 
   private async request<T>(
     method: 'GET' | 'POST' | 'PUT' | 'DELETE',
@@ -144,15 +161,29 @@ export class GoogleCalendarClient {
   ): Promise<T> {
     const token = await this.getAccessToken();
 
-    const response = await fetch(this.buildUrl(path, query), {
-      method,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/json',
-        'Content-Type': 'application/json'
-      },
-      body: body !== undefined ? JSON.stringify(body) : undefined
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), GoogleCalendarClient.REQUEST_TIMEOUT_MS);
+
+    let response: Response;
+    try {
+      response = await fetch(this.buildUrl(path, query), {
+        method,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal: controller.signal
+      });
+    } catch (error) {
+      clearTimeout(timeoutId);
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw new Error(`Google Calendar API ${method} ${path} timed out after ${GoogleCalendarClient.REQUEST_TIMEOUT_MS}ms`);
+      }
+      throw error;
+    }
+    clearTimeout(timeoutId);
 
     if (response.status === 401 && !retried) {
       const refreshed = await this.refreshAccessToken();
