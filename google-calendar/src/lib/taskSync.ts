@@ -23,9 +23,17 @@ export interface GoogleCalendarSyncResult {
   details?: Record<string, unknown>;
 }
 
+export interface SyncBatchCaches {
+  projectMappingByLocalId?: Map<string, MappingRecord>;
+}
+
+// Shared client instance for batch execution — avoids re-fetching the access token per change.
+let sharedClient: GoogleCalendarClient | null = null;
+
 export async function syncTaskToGoogleCalendar(
   input: GoogleCalendarSyncInput,
-  context: IntegrationContext<GoogleCalendarConfig>
+  context: IntegrationContext<GoogleCalendarConfig>,
+  caches?: SyncBatchCaches
 ): Promise<GoogleCalendarSyncResult> {
   const syncDirection = context.config?.syncDirection ?? 'bidirectional';
   if (syncDirection === 'google-to-timesheet' || syncDirection === 'external-to-timesheet') {
@@ -42,16 +50,22 @@ export async function syncTaskToGoogleCalendar(
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'task-not-found' } };
   }
 
-  const projectId = task.project?.id;
+  const projectId = task.project?.id ?? (input.item as Record<string, unknown>)?.projectId as string | undefined;
   if (!projectId) {
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'missing-project' } };
   }
 
-  const projectMapping = await context.mappings.get({
-    system: SYSTEM,
-    entity: PROJECT_ENTITY,
-    localId: projectId
-  });
+  // Use pre-loaded project mapping from cache if available
+  let projectMapping: MappingRecord | null | undefined;
+  if (caches?.projectMappingByLocalId) {
+    projectMapping = caches.projectMappingByLocalId.get(projectId) ?? null;
+  } else {
+    projectMapping = await context.mappings.get({
+      system: SYSTEM,
+      entity: PROJECT_ENTITY,
+      localId: projectId
+    });
+  }
   const externalCalendarId = projectMapping?.externalId;
 
   if (!externalCalendarId) {
@@ -63,7 +77,7 @@ export async function syncTaskToGoogleCalendar(
     };
   }
 
-  const client = createClient(context);
+  const client = getOrCreateClient(context);
   const taskMapping = await context.mappings.get({
     system: SYSTEM,
     entity: TASK_ENTITY,
@@ -494,17 +508,25 @@ function createClient(context: IntegrationContext<GoogleCalendarConfig>): Google
   });
 }
 
+function getOrCreateClient(context: IntegrationContext<GoogleCalendarConfig>): GoogleCalendarClient {
+  if (!sharedClient) {
+    sharedClient = createClient(context);
+  }
+  return sharedClient;
+}
+
 async function loadTask(
   taskId: string,
   input: GoogleCalendarSyncInput,
   context: IntegrationContext<GoogleCalendarConfig>
 ): Promise<TaskDto | null> {
+  // Prefer inline item data from sync change — avoids an API round-trip
+  if (input?.item && typeof input.item === 'object' && input.item.id) {
+    return input.item as TaskDto;
+  }
   try {
     return await context.data.getTask(taskId);
   } catch {
-    if (input?.item && typeof input.item === 'object') {
-      return input.item as TaskDto;
-    }
     return null;
   }
 }

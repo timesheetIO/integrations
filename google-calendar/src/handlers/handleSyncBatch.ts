@@ -1,6 +1,9 @@
-import { defineHandler, SyncModeInput } from '@timesheet/integration-sdk';
+import { defineHandler, MappingRecord, SyncModeInput } from '@timesheet/integration-sdk';
 import { GoogleCalendarConfig } from '../lib/types';
 import { GoogleCalendarSyncResult, syncTaskToGoogleCalendar } from '../lib/taskSync';
+
+const SYSTEM = 'google-calendar';
+const PROJECT_ENTITY = 'project';
 
 export const handleSyncBatch = defineHandler<SyncModeInput, GoogleCalendarSyncResult, GoogleCalendarConfig>(
   async (input, context) => {
@@ -10,6 +13,13 @@ export const handleSyncBatch = defineHandler<SyncModeInput, GoogleCalendarSyncRe
       changeCount: input.changes.length,
       hasMore: input.hasMore
     });
+
+    // Pre-load all project mappings once for the entire batch
+    const projectMappings = await context.mappings.list({ system: SYSTEM, entity: PROJECT_ENTITY });
+    const projectMappingByLocalId = new Map<string, MappingRecord>();
+    for (const mapping of projectMappings) {
+      projectMappingByLocalId.set(mapping.localId, mapping);
+    }
 
     let syncedCount = 0;
     const errors: Array<{ entityId: string; error: string }> = [];
@@ -27,7 +37,8 @@ export const handleSyncBatch = defineHandler<SyncModeInput, GoogleCalendarSyncRe
             taskId: change.entityId,
             item: change.item as Record<string, unknown> & { id?: string }
           },
-          context
+          context,
+          { projectMappingByLocalId }
         );
 
         if (result.status === 'synced' || result.status === 'deleted') {
@@ -44,7 +55,7 @@ export const handleSyncBatch = defineHandler<SyncModeInput, GoogleCalendarSyncRe
     }
 
     return {
-      system: 'google-calendar',
+      system: SYSTEM,
       status: errors.length > 0 ? 'partial' : 'completed',
       syncedCount,
       details: {

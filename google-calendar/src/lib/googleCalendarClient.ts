@@ -13,10 +13,19 @@ interface GoogleCalendarClientOptions {
 export class GoogleCalendarClient {
   private readonly getAccessToken: () => Promise<string>;
   private readonly refreshAccessToken: () => Promise<string>;
+  private cachedToken: string | null = null;
 
   constructor(options: GoogleCalendarClientOptions) {
-    this.getAccessToken = options.getAccessToken;
-    this.refreshAccessToken = options.refreshAccessToken;
+    this.getAccessToken = async () => {
+      if (this.cachedToken) return this.cachedToken;
+      this.cachedToken = await options.getAccessToken();
+      return this.cachedToken;
+    };
+    this.refreshAccessToken = async () => {
+      this.cachedToken = null;
+      this.cachedToken = await options.refreshAccessToken();
+      return this.cachedToken;
+    };
   }
 
   async testConnection(): Promise<boolean> {
