@@ -552,20 +552,13 @@ async function loadTask(
     const raw = input.item as Record<string, unknown>;
     const projectId = raw.projectId as string | undefined;
     if (!raw.project && projectId) {
-      // Enrich with full project data from cache or API
+      // Only enrich with project data if the project is mapped (has a calendar).
+      // Unmapped projects will be skipped at the mapping check anyway.
       let project: ProjectDto | Record<string, unknown> | undefined;
       if (caches?.projectById) {
         project = caches.projectById.get(projectId);
       }
-      if (!project) {
-        try {
-          project = await context.data.getProject(projectId);
-          caches?.projectById?.set(projectId, project);
-        } catch {
-          project = { id: projectId };
-        }
-      }
-      raw.project = project;
+      raw.project = project ?? { id: projectId };
     }
     return raw as unknown as TaskDto;
   }
