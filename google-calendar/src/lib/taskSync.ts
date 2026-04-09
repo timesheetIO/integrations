@@ -94,6 +94,10 @@ export async function syncTaskToGoogleCalendar(
     });
   }
 
+  if (task.running) {
+    return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'task-running' } };
+  }
+
   if (task.deleted) {
     if (taskMapping?.externalId) {
       const mappedCalendarId = getMappedCalendarId(taskMapping) ?? externalCalendarId;
