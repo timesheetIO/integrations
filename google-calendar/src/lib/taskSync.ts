@@ -537,9 +537,15 @@ async function loadTask(
   input: GoogleCalendarSyncInput,
   context: IntegrationContext<GoogleCalendarConfig>
 ): Promise<TaskDto | null> {
-  // Prefer inline item data from sync change — avoids an API round-trip
+  // Prefer inline item data from sync change — avoids an API round-trip.
+  // SyncChange payloads use flat fields (projectId) while the API returns
+  // nested objects (project: { id }). Normalize to the TaskDto shape.
   if (input?.item && typeof input.item === 'object' && input.item.id) {
-    return input.item as TaskDto;
+    const raw = input.item as Record<string, unknown>;
+    if (!raw.project && raw.projectId) {
+      raw.project = { id: raw.projectId };
+    }
+    return raw as unknown as TaskDto;
   }
   try {
     return await context.data.getTask(taskId);
