@@ -60,6 +60,8 @@ export const handleSyncBatch = defineHandler<SyncModeInput, GoogleCalendarSyncRe
 
         if (result.status === 'synced' || result.status === 'deleted') {
           syncedCount++;
+        } else if (result.status === 'skipped') {
+          context.logger.debug('Change skipped', { entityId: change.entityId, reason: result.details?.reason });
         }
       } catch (err) {
         context.logger.error('Failed to sync change', {

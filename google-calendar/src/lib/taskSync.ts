@@ -119,13 +119,17 @@ export async function syncTaskToGoogleCalendar(
 
   if (taskMapping?.externalId) {
     const mappedCalendarId = getMappedCalendarId(taskMapping) ?? externalCalendarId;
+    context.logger.info('Updating event', { taskId: task.id, calendarId: mappedCalendarId, eventId: taskMapping.externalId });
     externalEvent = await client.updateEvent(mappedCalendarId, taskMapping.externalId, payload);
   } else {
     const duplicate = await findEventByTimesheetId(client, externalCalendarId, task.id);
     if (duplicate?.id) {
+      context.logger.info('Found existing event by timesheetId', { taskId: task.id, eventId: duplicate.id });
       externalEvent = duplicate;
     } else {
+      context.logger.info('Creating event', { taskId: task.id, calendarId: externalCalendarId, summary: payload.summary });
       externalEvent = await client.createEvent(externalCalendarId, payload);
+      context.logger.info('Created event', { taskId: task.id, eventId: externalEvent?.id });
     }
   }
 
