@@ -246,6 +246,28 @@ async function syncCalendar(
     syncToken = metadataSyncToken;
   }
 
+  try {
+    return await fetchAndSyncEvents(context, client, projectMapping, calendarId, syncStateKey, syncToken);
+  } catch (err) {
+    // Google returns 400 or 410 when a sync token is invalid/expired — clear it and do a full resync
+    const errMsg = String(err);
+    if (syncToken && (errMsg.includes('(410)') || errMsg.includes('Invalid sync token'))) {
+      context.logger.warn('Sync token expired, performing full resync', { calendarId });
+      await context.state.delete(syncStateKey);
+      return await fetchAndSyncEvents(context, client, projectMapping, calendarId, syncStateKey, undefined);
+    }
+    throw err;
+  }
+}
+
+async function fetchAndSyncEvents(
+  context: IntegrationContext<GoogleCalendarConfig>,
+  client: GoogleCalendarClient,
+  projectMapping: MappingRecord,
+  calendarId: string,
+  syncStateKey: string,
+  syncToken: string | undefined
+): Promise<number> {
   let pageToken: string | undefined;
   let nextSyncToken: string | undefined;
   let syncedCount = 0;
