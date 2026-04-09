@@ -1,7 +1,7 @@
 {
   "id": "google-calendar-sync",
   "name": "Google Calendar Sync",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Synchronize Timesheet tasks with Google Calendar",
   "longDescription": "Bidirectional synchronization between Timesheet tasks and Google Calendar events.",
   "icon": "google-calendar",

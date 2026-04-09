@@ -517,11 +517,7 @@ function getHeader(input: GoogleCalendarSyncInput, name: string): string | undef
 export async function ensureWatchChannels(
   context: IntegrationContext<GoogleCalendarConfig>
 ): Promise<void> {
-  // The webhook URL is passed via the context metadata (set by the backend runtime)
-  const contextAny = context as unknown as Record<string, unknown>;
-  const metadata = contextAny['metadata'] as Record<string, unknown> | undefined;
-  const webhooks = metadata?.['webhooks'] as Record<string, string> | undefined;
-  const webhookUrl = webhooks?.['integration-webhook'];
+  const webhookUrl = context.metadata?.webhooks?.['integration-webhook'];
   if (!webhookUrl) {
     context.logger.info('No webhook URL available — skipping watch channel registration');
     return;
