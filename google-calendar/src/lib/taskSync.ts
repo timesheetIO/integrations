@@ -1,6 +1,7 @@
 import {
   IntegrationContext,
   MappingRecord,
+  ProjectDto,
   TaskCreateInput,
   TaskDto,
   TaskUpdateInput
@@ -26,6 +27,7 @@ export interface GoogleCalendarSyncResult {
 export interface SyncBatchCaches {
   projectMappingByLocalId?: Map<string, MappingRecord>;
   taskMappingByLocalId?: Map<string, MappingRecord>;
+  projectById?: Map<string, ProjectDto>;
 }
 
 // Shared client instance for batch execution — avoids re-fetching the access token per change.
@@ -46,7 +48,7 @@ export async function syncTaskToGoogleCalendar(
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'missing-task-id' } };
   }
 
-  const task = await loadTask(taskId, input, context);
+  const task = await loadTask(taskId, input, context, caches);
   if (!task) {
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'task-not-found' } };
   }
@@ -535,15 +537,31 @@ function getOrCreateClient(context: IntegrationContext<GoogleCalendarConfig>): G
 async function loadTask(
   taskId: string,
   input: GoogleCalendarSyncInput,
-  context: IntegrationContext<GoogleCalendarConfig>
+  context: IntegrationContext<GoogleCalendarConfig>,
+  caches?: SyncBatchCaches
 ): Promise<TaskDto | null> {
-  // Prefer inline item data from sync change — avoids an API round-trip.
+  // Prefer inline item data from sync change — avoids a full getTask round-trip
+  // (which populates pauses, notes, expenses, tags unnecessarily).
   // SyncChange payloads use flat fields (projectId) while the API returns
-  // nested objects (project: { id }). Normalize to the TaskDto shape.
+  // nested objects (project: { id, title }). Normalize and enrich with project data.
   if (input?.item && typeof input.item === 'object' && input.item.id) {
     const raw = input.item as Record<string, unknown>;
-    if (!raw.project && raw.projectId) {
-      raw.project = { id: raw.projectId };
+    const projectId = raw.projectId as string | undefined;
+    if (!raw.project && projectId) {
+      // Enrich with full project data from cache or API
+      let project: ProjectDto | Record<string, unknown> | undefined;
+      if (caches?.projectById) {
+        project = caches.projectById.get(projectId);
+      }
+      if (!project) {
+        try {
+          project = await context.data.getProject(projectId);
+          caches?.projectById?.set(projectId, project);
+        } catch {
+          project = { id: projectId };
+        }
+      }
+      raw.project = project;
     }
     return raw as unknown as TaskDto;
   }
