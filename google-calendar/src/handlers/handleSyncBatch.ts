@@ -14,11 +14,18 @@ export const handleSyncBatch = defineHandler<SyncModeInput, GoogleCalendarSyncRe
       hasMore: input.hasMore
     });
 
-    // Pre-load all project mappings once for the entire batch
-    const projectMappings = await context.mappings.list({ system: SYSTEM, entity: PROJECT_ENTITY });
+    // Pre-load all mappings once for the entire batch
+    const [projectMappings, taskMappings] = await Promise.all([
+      context.mappings.list({ system: SYSTEM, entity: PROJECT_ENTITY }),
+      context.mappings.list({ system: SYSTEM, entity: 'task' })
+    ]);
     const projectMappingByLocalId = new Map<string, MappingRecord>();
     for (const mapping of projectMappings) {
       projectMappingByLocalId.set(mapping.localId, mapping);
+    }
+    const taskMappingByLocalId = new Map<string, MappingRecord>();
+    for (const mapping of taskMappings) {
+      taskMappingByLocalId.set(mapping.localId, mapping);
     }
 
     let syncedCount = 0;
@@ -38,7 +45,7 @@ export const handleSyncBatch = defineHandler<SyncModeInput, GoogleCalendarSyncRe
             item: change.item as Record<string, unknown> & { id?: string }
           },
           context,
-          { projectMappingByLocalId }
+          { projectMappingByLocalId, taskMappingByLocalId }
         );
 
         if (result.status === 'synced' || result.status === 'deleted') {

@@ -25,6 +25,7 @@ export interface GoogleCalendarSyncResult {
 
 export interface SyncBatchCaches {
   projectMappingByLocalId?: Map<string, MappingRecord>;
+  taskMappingByLocalId?: Map<string, MappingRecord>;
 }
 
 // Shared client instance for batch execution — avoids re-fetching the access token per change.
@@ -78,11 +79,18 @@ export async function syncTaskToGoogleCalendar(
   }
 
   const client = getOrCreateClient(context);
-  const taskMapping = await context.mappings.get({
-    system: SYSTEM,
-    entity: TASK_ENTITY,
-    localId: task.id
-  });
+
+  // Use pre-loaded task mapping from cache if available
+  let taskMapping: MappingRecord | null | undefined;
+  if (caches?.taskMappingByLocalId) {
+    taskMapping = caches.taskMappingByLocalId.get(task.id) ?? null;
+  } else {
+    taskMapping = await context.mappings.get({
+      system: SYSTEM,
+      entity: TASK_ENTITY,
+      localId: task.id
+    });
+  }
 
   if (task.deleted) {
     if (taskMapping?.externalId) {
@@ -128,9 +136,7 @@ export async function syncTaskToGoogleCalendar(
     };
   }
 
-  await context.mappings.upsert({
-    system: SYSTEM,
-    entity: TASK_ENTITY,
+  const upsertedMapping: MappingRecord = {
     localId: task.id,
     externalId: externalEvent.id,
     externalLabel: externalEvent.summary ?? task.description ?? task.id,
@@ -140,7 +146,18 @@ export async function syncTaskToGoogleCalendar(
       updated: externalEvent.updated ?? ''
     },
     syncStatus: 'SYNCED'
+  };
+
+  await context.mappings.upsert({
+    system: SYSTEM,
+    entity: TASK_ENTITY,
+    ...upsertedMapping
   });
+
+  // Update in-memory cache so subsequent changes in the same batch see this mapping
+  if (caches?.taskMappingByLocalId) {
+    caches.taskMappingByLocalId.set(task.id, upsertedMapping);
+  }
 
   return {
     system: SYSTEM,
