@@ -402,10 +402,10 @@ function toTaskDateRange(event: GoogleCalendarEvent): { startDateTime: string; e
 
   // Handle all-day events (date field instead of dateTime)
   if (!startRaw && event.start?.date) {
-    startRaw = `${event.start.date}T00:00:00Z`;
+    startRaw = `${event.start.date}T00:00:00+00:00`;
   }
   if (!endRaw && event.end?.date) {
-    endRaw = `${event.end.date}T00:00:00Z`;
+    endRaw = `${event.end.date}T00:00:00+00:00`;
   }
 
   if (!startRaw || !endRaw) {
@@ -419,8 +419,8 @@ function toTaskDateRange(event: GoogleCalendarEvent): { startDateTime: string; e
   }
 
   return {
-    startDateTime: start.toISOString(),
-    endDateTime: end.toISOString()
+    startDateTime: toTimesheetDateTime(start),
+    endDateTime: toTimesheetDateTime(end)
   };
 }
 
@@ -611,6 +611,11 @@ export async function ensureWatchChannels(
       });
     }
   }
+}
+
+/** Format a Date to the offset format the Timesheet backend expects: yyyy-MM-dd'T'HH:mm:ss+00:00 */
+function toTimesheetDateTime(date: Date): string {
+  return date.toISOString().replace(/\.\d{3}Z$/, '+00:00');
 }
 
 function readMetadataString(metadata: Record<string, unknown>, key: string): string | undefined {
