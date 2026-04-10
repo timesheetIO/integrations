@@ -1,6 +1,6 @@
 import { defineHandler, MappingRecord, ProjectDto, SyncModeInput } from '@timesheet/integration-sdk';
 import { GoogleCalendarConfig } from '../lib/types';
-import { GoogleCalendarSyncResult, syncTaskToGoogleCalendar } from '../lib/taskSync';
+import { GoogleCalendarSyncResult, syncTaskToGoogleCalendar, ensureWatchChannels } from '../lib/taskSync';
 
 const SYSTEM = 'google-calendar';
 const PROJECT_ENTITY = 'project';
@@ -70,6 +70,17 @@ export const handleSyncBatch = defineHandler<SyncModeInput, GoogleCalendarSyncRe
           error: String(err)
         });
         errors.push({ entityId: change.entityId, error: String(err) });
+      }
+    }
+
+    // Renew watch channels on the last batch (no more follow-ups) or when
+    // triggered by the daily schedule. ensureWatchChannels is cheap — it only
+    // re-registers channels that expire within 1 hour.
+    if (!input.hasMore) {
+      try {
+        await ensureWatchChannels(context);
+      } catch (err) {
+        context.logger.warn(`Watch channel renewal failed: ${String(err)}`);
       }
     }
 
