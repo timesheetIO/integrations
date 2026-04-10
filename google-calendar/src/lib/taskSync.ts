@@ -453,15 +453,16 @@ function toTaskDateRange(event: GoogleCalendarEvent): { startDateTime: string; e
     return null;
   }
 
-  const start = new Date(startRaw);
-  const end = new Date(endRaw);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+  // Validate by parsing, but preserve the original string with timezone offset.
+  // Google sends e.g. "2026-04-10T09:00:00+02:00" — pass through directly so the
+  // backend stores the correct timezone instead of converting to UTC.
+  if (Number.isNaN(new Date(startRaw).getTime()) || Number.isNaN(new Date(endRaw).getTime())) {
     return null;
   }
 
   return {
-    startDateTime: toTimesheetDateTime(start),
-    endDateTime: toTimesheetDateTime(end)
+    startDateTime: startRaw,
+    endDateTime: endRaw
   };
 }
 
