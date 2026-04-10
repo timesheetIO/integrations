@@ -9,11 +9,11 @@ export const runFullSync = defineHandler<void, GoogleCalendarSyncResult, GoogleC
       syncDirection: context.config?.syncDirection ?? 'bidirectional'
     });
 
-    const result = await runGoogleCalendarFullSync(context);
-
-    // Ensure watch channels are active for inbound push notifications
+    // Register watch channels first — this is fast (1-2 API calls per calendar)
+    // and ensures inbound push notifications work even if the full sync times out.
     await ensureWatchChannels(context);
 
+    const result = await runGoogleCalendarFullSync(context);
     return result;
   }
 );
