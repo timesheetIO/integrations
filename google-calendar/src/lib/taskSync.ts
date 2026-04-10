@@ -466,8 +466,8 @@ function toTaskDateRange(event: GoogleCalendarEvent): { startDateTime: string; e
 }
 
 function buildGoogleEventPayload(task: TaskDto): Record<string, unknown> {
-  const startDateTime = task.startDateTime ? new Date(task.startDateTime).toISOString() : undefined;
-  const endDateTime = task.endDateTime ? new Date(task.endDateTime).toISOString() : undefined;
+  const startDateTime = task.startDateTime;
+  const endDateTime = task.endDateTime;
 
   if (!startDateTime || !endDateTime) {
     throw new Error(`Task ${task.id} is missing start or end datetime.`);
