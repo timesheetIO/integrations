@@ -645,7 +645,7 @@ export async function ensureWatchChannels(
     }
 
     try {
-      const channelId = `ts-${context.installationId}-${mapping.externalId}-${now}`.substring(0, 64);
+      const channelId = `ts-${context.installationId}-${mapping.externalId}-${now}`.replace(/[^A-Za-z0-9\-_+/=]/g, '_').substring(0, 64);
       context.logger.info(`Registering watch: calendar=${mapping.externalId} webhook=${webhookUrl} channelId=${channelId}`);
       const watchResult = await client.watchEvents(mapping.externalId, channelId, webhookUrl, watchTtlSeconds);
 
