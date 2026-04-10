@@ -646,6 +646,7 @@ export async function ensureWatchChannels(
 
     try {
       const channelId = `ts-${context.installationId}-${mapping.externalId}-${now}`.substring(0, 64);
+      context.logger.info(`Registering watch: calendar=${mapping.externalId} webhook=${webhookUrl} channelId=${channelId}`);
       const watchResult = await client.watchEvents(mapping.externalId, channelId, webhookUrl, watchTtlSeconds);
 
       await context.mappings.upsert({
@@ -663,16 +664,9 @@ export async function ensureWatchChannels(
         syncStatus: 'SYNCED'
       });
 
-      context.logger.info('Registered watch channel', {
-        calendarId: mapping.externalId,
-        channelId,
-        expiration: watchResult.expiration
-      });
+      context.logger.info(`Watch channel registered: calendar=${mapping.externalId} resourceId=${watchResult.resourceId} expiration=${watchResult.expiration}`);
     } catch (err) {
-      context.logger.warn('Failed to register watch channel', {
-        calendarId: mapping.externalId,
-        error: String(err)
-      });
+      context.logger.error(`Failed to register watch channel: calendar=${mapping.externalId} error=${String(err)}`);
     }
   }
 }
