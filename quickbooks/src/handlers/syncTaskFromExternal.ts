@@ -1,6 +1,6 @@
 import { defineHandler } from '@timesheet/integration-sdk';
 import { QuickBooksConfig, SyncInput } from '../lib/types';
-import { QuickBooksSyncResult, handleQuickBooksWebhook } from '../lib/taskSync';
+import { QuickBooksSyncResult, syncTaskFromQuickBooks } from '../lib/taskSync';
 
 export const syncTaskFromExternal = defineHandler<SyncInput, QuickBooksSyncResult, QuickBooksConfig>(
   async (input, context) => {
@@ -9,6 +9,6 @@ export const syncTaskFromExternal = defineHandler<SyncInput, QuickBooksSyncResul
       externalTaskId: input?.externalTaskId
     });
 
-    return await handleQuickBooksWebhook(input, context);
+    return await syncTaskFromQuickBooks(input, context);
   }
 );

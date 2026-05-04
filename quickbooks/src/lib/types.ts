@@ -3,6 +3,7 @@ import { TaskDto } from '@timesheet/integration-sdk';
 export interface QuickBooksConfig {
   syncDirection?: 'bidirectional' | 'timesheet-to-qb' | 'qb-to-timesheet' | 'timesheet-to-external' | 'external-to-timesheet';
   sandboxMode?: boolean;
+  webhookVerifierToken?: string;
 }
 
 export interface QuickBooksRef {
@@ -52,6 +53,9 @@ export interface QuickBooksQueryResponse {
     Employee?: QuickBooksEmployee[];
     TimeActivity?: QuickBooksTimeActivity[];
     CompanyInfo?: Array<Record<string, unknown>>;
+    startPosition?: number;
+    maxResults?: number;
+    totalCount?: number;
   };
 }
 
@@ -80,8 +84,12 @@ export interface SyncInput {
   event?: string;
   triggerId?: string;
   taskId?: string;
-  item?: Partial<TaskDto> & { taskId?: string; id?: string };
+  item?: Partial<TaskDto> & { taskId?: string; id?: string; projectId?: string; userId?: string };
   externalTaskId?: string;
   realmId?: string;
+  method?: string;
+  headers?: Record<string, string>;
+  query?: Record<string, string>;
   body?: unknown;
+  rawBody?: string;
 }

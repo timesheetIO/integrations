@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import {
   IntegrationContext,
   MappingRecord,
@@ -9,6 +10,7 @@ import { QuickBooksClient } from './quickbooksClient';
 import {
   QuickBooksConfig,
   QuickBooksTimeActivity,
+  QuickBooksWebhookEntity,
   QuickBooksWebhookPayload,
   SyncInput
 } from './types';
@@ -17,6 +19,7 @@ const SYSTEM = 'quickbooks';
 const PROJECT_ENTITY = 'project';
 const USER_ENTITY = 'user';
 const TASK_ENTITY = 'task';
+const SYNC_STATE_KEY = 'quickbooks:last-sync-time';
 
 export interface QuickBooksSyncResult {
   system: string;
@@ -25,9 +28,26 @@ export interface QuickBooksSyncResult {
   details?: Record<string, unknown>;
 }
 
+export interface SyncBatchCaches {
+  projectMappingByLocalId?: Map<string, MappingRecord>;
+  userMappingByLocalId?: Map<string, MappingRecord>;
+  taskMappingByLocalId?: Map<string, MappingRecord>;
+}
+
+// Shared client per batch keyed by realmId — avoids re-fetching the access token
+// and re-resolving the connection's realmId on every change. Reset between
+// installations is the runtime's responsibility (each invocation gets a fresh
+// module instance in the typical worker model).
+let sharedClient: { realmId: string; client: QuickBooksClient } | null = null;
+
+export function resetSharedClient(): void {
+  sharedClient = null;
+}
+
 export async function syncTaskToQuickBooks(
   input: SyncInput,
-  context: IntegrationContext<QuickBooksConfig>
+  context: IntegrationContext<QuickBooksConfig>,
+  caches?: SyncBatchCaches
 ): Promise<QuickBooksSyncResult> {
   const syncDirection = context.config?.syncDirection ?? 'bidirectional';
   if (syncDirection === 'qb-to-timesheet' || syncDirection === 'external-to-timesheet') {
@@ -44,16 +64,16 @@ export async function syncTaskToQuickBooks(
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'task-not-found', taskId } };
   }
 
+  if (task.running) {
+    return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'task-running', taskId } };
+  }
+
   const projectId = task.project?.id;
   if (!projectId) {
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'missing-project', taskId } };
   }
 
-  const projectMapping = await context.mappings.get({
-    system: SYSTEM,
-    entity: PROJECT_ENTITY,
-    localId: projectId
-  });
+  const projectMapping = await getMapping(context, caches?.projectMappingByLocalId, PROJECT_ENTITY, projectId);
   if (!projectMapping?.externalId) {
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'missing-project-mapping', projectId } };
   }
@@ -63,26 +83,18 @@ export async function syncTaskToQuickBooks(
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'missing-user', taskId } };
   }
 
-  const userMapping = await context.mappings.get({
-    system: SYSTEM,
-    entity: USER_ENTITY,
-    localId: localUserId
-  });
+  const userMapping = await getMapping(context, caches?.userMappingByLocalId, USER_ENTITY, localUserId);
   if (!userMapping?.externalId) {
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'missing-user-mapping', userId: localUserId } };
   }
 
-  const client = await createClient(context, input?.realmId);
-  const taskMapping = await context.mappings.get({
-    system: SYSTEM,
-    entity: TASK_ENTITY,
-    localId: task.id
-  });
+  const client = await getOrCreateClient(context, input?.realmId);
+  const taskMapping = await getMapping(context, caches?.taskMappingByLocalId, TASK_ENTITY, task.id);
 
   if (task.deleted) {
     if (taskMapping?.externalId) {
       const existing = await client.getTimeActivity(taskMapping.externalId);
-      if (existing?.Id && existing.SyncToken) {
+      if (existing?.Id && existing.SyncToken !== undefined) {
         await client.deleteTimeActivity(existing.Id, existing.SyncToken);
       }
       await context.mappings.delete({
@@ -90,6 +102,7 @@ export async function syncTaskToQuickBooks(
         entity: TASK_ENTITY,
         localId: task.id
       });
+      caches?.taskMappingByLocalId?.delete(task.id);
       return { system: SYSTEM, status: 'deleted', syncedCount: 1 };
     }
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'already-deleted' } };
@@ -102,8 +115,8 @@ export async function syncTaskToQuickBooks(
     context.logger.warn('Failed to build time activity payload', { taskId: task.id, error: String(err) });
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'invalid-task-data', taskId: task.id } };
   }
-  let external: QuickBooksTimeActivity;
 
+  let external: QuickBooksTimeActivity;
   if (taskMapping?.externalId) {
     const existing = await client.getTimeActivity(taskMapping.externalId);
     if (existing?.Id && existing.SyncToken !== undefined) {
@@ -120,9 +133,7 @@ export async function syncTaskToQuickBooks(
     external = await client.createTimeActivity(payload);
   }
 
-  await context.mappings.upsert({
-    system: SYSTEM,
-    entity: TASK_ENTITY,
+  const upsertedMapping: MappingRecord = {
     localId: task.id,
     externalId: external.Id,
     externalLabel: task.description ?? task.id,
@@ -133,7 +144,15 @@ export async function syncTaskToQuickBooks(
       txnDate: external.TxnDate ?? ''
     },
     syncStatus: 'SYNCED'
+  };
+
+  await context.mappings.upsert({
+    system: SYSTEM,
+    entity: TASK_ENTITY,
+    ...upsertedMapping
   });
+
+  caches?.taskMappingByLocalId?.set(task.id, upsertedMapping);
 
   return {
     system: SYSTEM,
@@ -166,34 +185,51 @@ export async function runQuickBooksFullSync(
     };
   }
 
+  if (!allowInbound) {
+    return {
+      system: SYSTEM,
+      status: 'completed',
+      syncedCount: 0,
+      details: { syncDirection, reason: 'outbound-only' }
+    };
+  }
+
+  const projectByExternalId = new Map(projectMappings.map((mapping) => [mapping.externalId, mapping.localId]));
+  const userByExternalId = new Map(userMappings.map((mapping) => [mapping.externalId, mapping.localId]));
+
+  const lastSyncTime = (await context.state.get<string>(SYNC_STATE_KEY)) ?? undefined;
+  const startedAt = new Date().toISOString();
+
+  const client = await getOrCreateClient(context);
+  const activities = await client.listTimeActivities({ sinceIso: lastSyncTime });
+
   let syncedCount = 0;
-
-  if (allowInbound) {
-    const client = await createClient(context);
-    const activities = await client.listTimeActivities();
-
-    const projectByExternalId = new Map(projectMappings.map((mapping) => [mapping.externalId, mapping.localId]));
-    const userByExternalId = new Map(userMappings.map((mapping) => [mapping.externalId, mapping.localId]));
-
-    for (const activity of activities) {
-      const synced = await syncSingleExternalActivity(
-        activity,
-        context,
-        projectByExternalId,
-        userByExternalId
-      );
-      if (synced) {
-        syncedCount += 1;
-      }
+  for (const activity of activities) {
+    const synced = await syncSingleExternalActivity(
+      activity,
+      context,
+      projectByExternalId,
+      userByExternalId
+    );
+    if (synced) {
+      syncedCount += 1;
     }
   }
+
+  await context.state.set(SYNC_STATE_KEY, startedAt);
 
   return {
     system: SYSTEM,
     status: 'completed',
     syncedCount,
-    details: { syncDirection }
+    details: { syncDirection, sinceIso: lastSyncTime ?? null, activityCount: activities.length }
   };
+}
+
+interface EntityChange {
+  id: string;
+  operation: string;
+  realmId: string;
 }
 
 export async function handleQuickBooksWebhook(
@@ -205,27 +241,64 @@ export async function handleQuickBooksWebhook(
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'sync-direction-mismatch' } };
   }
 
-  const payload = asWebhookPayload(input?.body);
-  const entities = payload?.eventNotifications ?? [];
-
-  const ids = new Set<string>();
-  for (const notification of entities) {
-    const dataEntities = notification?.dataChangeEvent?.entities ?? [];
-    for (const entity of dataEntities) {
-      if (!entity?.id || !entity?.name) {
-        continue;
-      }
-      if (entity.name.toLowerCase() === 'timeactivity') {
-        ids.add(entity.id);
-      }
-    }
+  const verifierToken = context.config?.webhookVerifierToken;
+  if (!verifierToken) {
+    context.logger.warn('QuickBooks webhook rejected: webhookVerifierToken not configured');
+    return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason: 'verifier-not-configured' } };
   }
 
-  if (ids.size === 0 && input?.externalTaskId) {
-    ids.add(input.externalTaskId);
+  const signature = getHeader(input, 'intuit-signature');
+  if (!signature) {
+    return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason: 'missing-signature' } };
   }
 
-  if (ids.size === 0) {
+  const rawBody = getRawBody(input);
+  if (!rawBody) {
+    return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason: 'missing-body' } };
+  }
+
+  if (!verifyIntuitSignature(rawBody, signature, verifierToken)) {
+    context.logger.warn('QuickBooks webhook rejected: signature mismatch');
+    return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason: 'invalid-signature' } };
+  }
+
+  const payload = parseWebhookPayload(input.body, rawBody);
+  const changes = collectChangesFromPayload(payload);
+
+  return processInboundChanges(changes, context);
+}
+
+export async function syncTaskFromQuickBooks(
+  input: SyncInput,
+  context: IntegrationContext<QuickBooksConfig>
+): Promise<QuickBooksSyncResult> {
+  const syncDirection = context.config?.syncDirection ?? 'bidirectional';
+  if (syncDirection === 'timesheet-to-qb' || syncDirection === 'timesheet-to-external') {
+    return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'sync-direction-mismatch' } };
+  }
+
+  const externalTaskId = input?.externalTaskId;
+  if (!externalTaskId) {
+    return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'missing-external-task-id' } };
+  }
+
+  const realmId = input?.realmId
+    ?? (await context.credentials.getConnectionInfo(SYSTEM))?.accountId;
+  if (!realmId) {
+    return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'missing-realm-id' } };
+  }
+
+  return processInboundChanges(
+    [{ id: externalTaskId, operation: 'update', realmId }],
+    context
+  );
+}
+
+async function processInboundChanges(
+  changes: EntityChange[],
+  context: IntegrationContext<QuickBooksConfig>
+): Promise<QuickBooksSyncResult> {
+  if (changes.length === 0) {
     return {
       system: SYSTEM,
       status: 'ignored',
@@ -239,24 +312,40 @@ export async function handleQuickBooksWebhook(
   const projectByExternalId = new Map(projectMappings.map((mapping) => [mapping.externalId, mapping.localId]));
   const userByExternalId = new Map(userMappings.map((mapping) => [mapping.externalId, mapping.localId]));
 
-  const client = await createClient(context, input?.realmId);
+  const byRealm = new Map<string, EntityChange[]>();
+  for (const change of changes) {
+    const list = byRealm.get(change.realmId) ?? [];
+    list.push(change);
+    byRealm.set(change.realmId, list);
+  }
 
   let syncedCount = 0;
-  for (const id of ids) {
-    const activity = await client.getTimeActivity(id);
-    if (!activity) {
-      continue;
-    }
+  for (const [realmId, realmChanges] of byRealm) {
+    const client = await getOrCreateClient(context, realmId);
+    for (const change of realmChanges) {
+      if (isDeleteOperation(change.operation)) {
+        const removed = await deleteLocalTaskByExternalId(context, change.id);
+        if (removed) {
+          syncedCount += 1;
+        }
+        continue;
+      }
 
-    const synced = await syncSingleExternalActivity(
-      activity,
-      context,
-      projectByExternalId,
-      userByExternalId
-    );
+      const activity = await client.getTimeActivity(change.id);
+      if (!activity) {
+        continue;
+      }
 
-    if (synced) {
-      syncedCount += 1;
+      const synced = await syncSingleExternalActivity(
+        activity,
+        context,
+        projectByExternalId,
+        userByExternalId
+      );
+
+      if (synced) {
+        syncedCount += 1;
+      }
     }
   }
 
@@ -264,15 +353,74 @@ export async function handleQuickBooksWebhook(
     system: SYSTEM,
     status: 'completed',
     syncedCount,
-    details: { entityCount: ids.size }
+    details: { entityCount: changes.length, realmCount: byRealm.size }
   };
 }
 
-function asWebhookPayload(body: unknown): QuickBooksWebhookPayload | null {
-  if (!body || typeof body !== 'object') {
-    return null;
+function collectChangesFromPayload(payload: QuickBooksWebhookPayload | null): EntityChange[] {
+  const changes: EntityChange[] = [];
+  for (const notification of payload?.eventNotifications ?? []) {
+    const realmId = notification?.realmId;
+    if (!realmId) {
+      continue;
+    }
+    for (const entity of notification?.dataChangeEvent?.entities ?? []) {
+      if (!isTimeActivityChange(entity)) {
+        continue;
+      }
+      changes.push({
+        id: entity.id as string,
+        operation: (entity.operation ?? 'Update').toLowerCase(),
+        realmId
+      });
+    }
   }
-  return body as QuickBooksWebhookPayload;
+  return changes;
+}
+
+export async function createQuickBooksClient(
+  context: IntegrationContext<QuickBooksConfig>,
+  realmOverride?: string
+): Promise<QuickBooksClient> {
+  let realmId = realmOverride;
+  if (!realmId) {
+    const connectionInfo = await context.credentials.getConnectionInfo(SYSTEM);
+    realmId = connectionInfo?.accountId;
+  }
+  if (!realmId) {
+    throw new Error('QuickBooks realmId/accountId missing. Complete OAuth first.');
+  }
+  return new QuickBooksClient({
+    realmId,
+    sandboxMode: context.config?.sandboxMode === true,
+    getAccessToken: () => context.credentials.getAccessToken(SYSTEM),
+    refreshAccessToken: () => context.credentials.refreshToken(SYSTEM)
+  });
+}
+
+async function getOrCreateClient(
+  context: IntegrationContext<QuickBooksConfig>,
+  realmOverride?: string
+): Promise<QuickBooksClient> {
+  if (realmOverride) {
+    if (sharedClient && sharedClient.realmId === realmOverride) {
+      return sharedClient.client;
+    }
+    const client = await createQuickBooksClient(context, realmOverride);
+    sharedClient = { realmId: realmOverride, client };
+    return client;
+  }
+  if (sharedClient) {
+    return sharedClient.client;
+  }
+  const connectionInfo = await context.credentials.getConnectionInfo(SYSTEM);
+  const realmId = connectionInfo?.accountId;
+  if (!realmId) {
+    throw new Error('QuickBooks realmId/accountId missing. Complete OAuth first.');
+  }
+  const client = await createQuickBooksClient(context, realmId);
+  sharedClient = { realmId, client };
+  return client;
 }
 
 async function syncSingleExternalActivity(
@@ -368,24 +516,45 @@ async function syncSingleExternalActivity(
   return true;
 }
 
-async function createClient(
+async function deleteLocalTaskByExternalId(
   context: IntegrationContext<QuickBooksConfig>,
-  realmOverride?: string
-): Promise<QuickBooksClient> {
-  const connectionInfo = await context.credentials.getConnectionInfo(SYSTEM);
-  const realmId = realmOverride
-    || connectionInfo?.accountId;
-
-  if (!realmId) {
-    throw new Error('QuickBooks realmId/accountId missing. Complete OAuth first.');
-  }
-
-  return new QuickBooksClient({
-    realmId,
-    sandboxMode: context.config?.sandboxMode === true,
-    getAccessToken: () => context.credentials.getAccessToken(SYSTEM),
-    refreshAccessToken: () => context.credentials.refreshToken(SYSTEM)
+  externalId: string
+): Promise<boolean> {
+  const mapping = await context.mappings.findByExternal({
+    system: SYSTEM,
+    entity: TASK_ENTITY,
+    externalId
   });
+  if (!mapping?.localId) {
+    return false;
+  }
+  try {
+    await context.data.deleteTask(mapping.localId);
+  } catch (err) {
+    context.logger.warn('Failed to delete local task for QuickBooks delete event', {
+      localId: mapping.localId,
+      externalId,
+      error: String(err)
+    });
+  }
+  await context.mappings.delete({
+    system: SYSTEM,
+    entity: TASK_ENTITY,
+    localId: mapping.localId
+  });
+  return true;
+}
+
+async function getMapping(
+  context: IntegrationContext<QuickBooksConfig>,
+  cache: Map<string, MappingRecord> | undefined,
+  entity: string,
+  localId: string
+): Promise<MappingRecord | null> {
+  if (cache) {
+    return cache.get(localId) ?? null;
+  }
+  return context.mappings.get({ system: SYSTEM, entity, localId });
 }
 
 async function loadTask(
@@ -393,12 +562,26 @@ async function loadTask(
   input: SyncInput,
   context: IntegrationContext<QuickBooksConfig>
 ): Promise<TaskDto | null> {
+  // Prefer the inline payload from the sync change — flat fields (projectId/userId)
+  // need to be normalized to the nested API shape (project: { id }) used downstream.
+  if (input?.item && typeof input.item === 'object' && (input.item.id || input.item.taskId)) {
+    const raw = input.item as Record<string, unknown>;
+    const projectId = raw.projectId as string | undefined;
+    if (!raw.project && projectId) {
+      raw.project = { id: projectId };
+    }
+    const userId = raw.userId as string | undefined;
+    if (!raw.user && userId) {
+      raw.user = userId;
+    }
+    if (!raw.id && raw.taskId) {
+      raw.id = raw.taskId;
+    }
+    return raw as unknown as TaskDto;
+  }
   try {
     return await context.data.getTask(taskId);
   } catch {
-    if (input?.item && typeof input.item === 'object') {
-      return input.item as TaskDto;
-    }
     return null;
   }
 }
@@ -476,11 +659,14 @@ function parseDate(value: string | undefined): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+// QuickBooks BillableStatus has only three values, so an unbillable-but-billed
+// (billable=false, billed=true) state can't be represented round-trip — we
+// downgrade it to NotBillable to keep `billable` authoritative on push.
 function toQuickBooksBillableStatus(billable: boolean, billed: boolean): string {
-  if (billed) {
-    return 'HasBeenBilled';
+  if (!billable) {
+    return 'NotBillable';
   }
-  return billable ? 'Billable' : 'NotBillable';
+  return billed ? 'HasBeenBilled' : 'Billable';
 }
 
 function isBillable(status: string | undefined): boolean {
@@ -497,4 +683,81 @@ function getExternalUpdatedAt(activity: QuickBooksTimeActivity): number {
     || activity.MetaData?.CreateTime;
   const parsed = value ? Date.parse(value) : NaN;
   return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function isTimeActivityChange(entity: QuickBooksWebhookEntity | undefined): boolean {
+  if (!entity?.id || !entity?.name) {
+    return false;
+  }
+  return entity.name.toLowerCase() === 'timeactivity';
+}
+
+function isDeleteOperation(operation: string): boolean {
+  // Intuit emits Create/Update/Delete/Merge/Void; treat Delete and Void as
+  // hard removals; Merge is rare on TimeActivity but the merged-from entity
+  // becomes inaccessible, so we drop it locally as well.
+  return operation === 'delete' || operation === 'void' || operation === 'merge';
+}
+
+function getHeader(input: SyncInput, name: string): string | undefined {
+  const headers: Record<string, unknown> = { ...(input?.headers ?? {}) };
+  if (input?.body && typeof input.body === 'object') {
+    const nested = (input.body as { headers?: Record<string, unknown> }).headers;
+    if (nested && typeof nested === 'object') {
+      Object.assign(headers, nested);
+    }
+  }
+  const target = name.toLowerCase();
+  const key = Object.keys(headers).find((header) => header.toLowerCase() === target);
+  if (!key) {
+    return undefined;
+  }
+  const value = headers[key];
+  return value === undefined || value === null ? undefined : String(value);
+}
+
+function getRawBody(input: SyncInput): string | undefined {
+  if (typeof input?.rawBody === 'string' && input.rawBody.length > 0) {
+    return input.rawBody;
+  }
+  if (typeof input?.body === 'string' && input.body.length > 0) {
+    return input.body;
+  }
+  // Falling back to JSON.stringify will only match Intuit's signature if the
+  // runtime serializes the parsed body identically to the request bytes — it
+  // typically doesn't. Verifier mismatches will fail closed downstream.
+  if (input?.body && typeof input.body === 'object') {
+    try {
+      return JSON.stringify(input.body);
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+function parseWebhookPayload(body: unknown, rawBody: string): QuickBooksWebhookPayload | null {
+  if (body && typeof body === 'object') {
+    return body as QuickBooksWebhookPayload;
+  }
+  if (rawBody) {
+    try {
+      return JSON.parse(rawBody) as QuickBooksWebhookPayload;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function verifyIntuitSignature(rawBody: string, signatureHeader: string, verifierToken: string): boolean {
+  const hmac = crypto.createHmac('sha256', verifierToken);
+  hmac.update(rawBody, 'utf8');
+  const expected = hmac.digest('base64');
+  const expectedBuffer = Buffer.from(expected);
+  const actualBuffer = Buffer.from(signatureHeader);
+  if (expectedBuffer.length !== actualBuffer.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(expectedBuffer, actualBuffer);
 }

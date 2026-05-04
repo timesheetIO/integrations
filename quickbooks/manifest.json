@@ -1,7 +1,7 @@
 {
   "id": "quickbooks-sync",
   "name": "QuickBooks Time Sync",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Synchronize tasks with QuickBooks Online",
   "longDescription": "Bidirectional synchronization between Timesheet tasks and QuickBooks TimeActivity entries.",
   "icon": "quickbooks",
@@ -34,6 +34,13 @@
         "title": "Use QuickBooks Sandbox",
         "default": false,
         "x-ui-help": "Enable for testing against a QuickBooks sandbox company."
+      },
+      "webhookVerifierToken": {
+        "type": "string",
+        "title": "Webhook Verifier Token",
+        "x-ui-widget": "password",
+        "x-ui-secret": true,
+        "x-ui-help": "Verifier Token from your Intuit Developer Dashboard (Webhooks settings). Required to authenticate inbound webhooks; without it, webhooks are rejected."
       }
     },
     "required": ["syncDirection"]
