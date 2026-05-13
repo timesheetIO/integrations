@@ -1,19 +1,21 @@
 {
   "id": "clickup-sync",
   "name": "ClickUp Sync",
-  "version": "1.0.0",
-  "description": "Timesheet ClickUp Sync plugin integration",
+  "version": "1.1.0",
+  "description": "Synchronize Timesheet tasks and todos with ClickUp",
+  "longDescription": "Bidirectional synchronization between Timesheet and ClickUp. Timesheet ToDos are mirrored as ClickUp tasks inside the mapped ClickUp list, and Timesheet time entries are pushed as ClickUp time entries attached to the corresponding ClickUp task (or workspace-level when no ToDo is linked).",
+  "icon": "clickup",
   "category": "project-management",
-  "tags": ["sync", "timesheet", "clickup"],
-  "dataAccess": ["projects", "tasks", "colleagues", "settings"],
+  "tags": ["sync", "timesheet", "clickup", "project-management", "time-tracking"],
+  "dataAccess": ["projects", "tasks", "todos", "colleagues", "settings"],
   "externalAuth": [
     {
       "id": "clickup",
       "type": "oauth2",
       "oauth": {
-        "authorizeUrl": "https://example.com/oauth/authorize",
-        "tokenUrl": "https://example.com/oauth/token",
-        "scopes": ["read", "write"]
+        "authorizeUrl": "https://app.clickup.com/api",
+        "tokenUrl": "https://api.clickup.com/api/v2/oauth/token",
+        "scopes": []
       }
     }
   ],
@@ -23,9 +25,16 @@
       "syncDirection": {
         "type": "string",
         "title": "Sync Direction",
-        "enum": ["bidirectional", "timesheet-to-external", "external-to-timesheet"],
+        "enum": ["bidirectional", "timesheet-to-clickup", "clickup-to-timesheet"],
         "default": "bidirectional",
         "x-ui-widget": "radio"
+      },
+      "webhookSecret": {
+        "type": "string",
+        "title": "Webhook Secret",
+        "x-ui-widget": "password",
+        "x-ui-secret": true,
+        "x-ui-help": "Shared secret returned by ClickUp when registering the webhook. Required to verify inbound webhooks."
       }
     },
     "required": ["syncDirection"]
@@ -36,40 +45,67 @@
       {
         "id": "projects",
         "title": "Project Mapping",
-        "description": "Map Timesheet projects to ClickUp Sync projects",
+        "description": "Map Timesheet projects to ClickUp lists",
         "localEntity": {
           "type": "project",
           "label": "Timesheet Project",
           "display": "{{title}}"
         },
         "externalEntity": {
-          "type": "project",
-          "label": "ClickUp Sync Project",
+          "type": "list",
+          "label": "ClickUp List",
           "fetchAction": "list-external-projects"
         },
         "required": true,
         "minMappings": 1
+      },
+      {
+        "id": "users",
+        "title": "User Mapping",
+        "description": "Map Timesheet users to ClickUp workspace members. Optional — only needed in multi-user workspaces and on ClickUp paid plans, where it lets each user's time entries appear under their own ClickUp account instead of the OAuth owner.",
+        "localEntity": {
+          "type": "user",
+          "label": "Timesheet User",
+          "display": "{{displayName}}"
+        },
+        "externalEntity": {
+          "type": "member",
+          "label": "ClickUp Member",
+          "fetchAction": "list-external-users"
+        },
+        "required": false,
+        "minMappings": 0
       }
     ]
   },
   "triggers": [
     {
-      "id": "task-created",
+      "id": "timesheet-changed",
       "type": "event",
-      "name": "Task Created",
-      "description": "Sync when a new task is created",
-      "events": ["task.create"],
-      "configurable": true
+      "mode": "sync",
+      "name": "Timesheet Changes",
+      "description": "Sync task and todo create/update/delete events to ClickUp",
+      "events": [
+        "task.create",
+        "task.update",
+        "task.delete",
+        "todo.create",
+        "todo.update",
+        "todo.delete"
+      ],
+      "configurable": true,
+      "actionId": "handle-sync-batch"
     },
     {
       "id": "integration-webhook",
       "type": "webhook",
-      "name": "ClickUp Sync Webhook",
-      "description": "Receive inbound changes from ClickUp Sync",
+      "name": "ClickUp Webhook",
+      "description": "Receive inbound task changes from ClickUp",
       "configurable": false,
+      "actionId": "handle-webhook",
       "webhook": {
         "signature": {
-          "header": "x-timesheet-signature",
+          "header": "x-signature",
           "algorithm": "hmac-sha256",
           "secretConfigKey": "webhookSecret"
         }
@@ -78,11 +114,21 @@
     {
       "id": "full-sync",
       "type": "schedule",
+      "mode": "sync",
       "name": "Scheduled Full Sync",
-      "description": "Run background synchronization",
+      "description": "Run incremental synchronization for all mapped lists",
       "schedule": "0 2 * * *",
       "timezone": "UTC",
-      "configurable": true
+      "configurable": true,
+      "events": [
+        "task.create",
+        "task.update",
+        "task.delete",
+        "todo.create",
+        "todo.update",
+        "todo.delete"
+      ],
+      "actionId": "handle-sync-batch"
     },
     {
       "id": "manual-sync",
@@ -92,19 +138,31 @@
       "userAction": {
         "label": "Sync Now",
         "placement": "settings"
-      }
+      },
+      "actionId": "run-full-sync"
     }
   ],
   "actions": [
     {
       "id": "sync-task-to-external",
-      "name": "Sync task to ClickUp Sync",
+      "name": "Sync time entry to ClickUp",
       "handler": "syncTaskToExternal"
     },
     {
+      "id": "sync-todo-to-external",
+      "name": "Sync todo to ClickUp",
+      "handler": "syncTodoToExternal"
+    },
+    {
+      "id": "handle-sync-batch",
+      "name": "Handle sync batch",
+      "handler": "handleSyncBatch"
+    },
+    {
       "id": "sync-task-from-external",
-      "name": "Sync task from ClickUp Sync",
-      "handler": "syncTaskFromExternal"
+      "name": "Sync task from ClickUp",
+      "handler": "syncTaskFromExternal",
+      "internal": true
     },
     {
       "id": "handle-webhook",
@@ -125,6 +183,11 @@
       "id": "list-external-projects",
       "handler": "listExternalProjects",
       "internal": true
+    },
+    {
+      "id": "list-external-users",
+      "handler": "listExternalUsers",
+      "internal": true
     }
   ],
   "pages": [
@@ -134,6 +197,21 @@
       "icon": "chart-bar",
       "layout": "dashboard",
       "widgets": [
+        {
+          "id": "last-sync",
+          "type": "sync_summary",
+          "title": "Last Sync"
+        },
+        {
+          "id": "sync-stats",
+          "type": "sync_stats",
+          "title": "Sync Statistics"
+        },
+        {
+          "id": "connection-health",
+          "type": "connection_health",
+          "title": "Connection Health"
+        },
         {
           "id": "manual-sync-btn",
           "type": "action_button",

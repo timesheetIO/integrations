@@ -1,18 +1,14 @@
-import { defineHandler, WebhookInput } from '@timesheet/integration-sdk';
+import { defineHandler } from '@timesheet/integration-sdk';
+import { ClickUpConfig, SyncInput } from '../lib/types';
+import { ClickUpSyncResult, syncTaskFromClickUp } from '../lib/taskSync';
 
-const SYSTEM = 'clickup';
-
-export const syncTaskFromExternal = defineHandler<WebhookInput, { system: string; accepted: boolean }>(
+export const syncTaskFromExternal = defineHandler<SyncInput, ClickUpSyncResult, ClickUpConfig>(
   async (input, context) => {
-    context.logger.info('Syncing task from external payload', {
-      system: SYSTEM,
-      method: input.method,
-      installationId: context.installationId
+    context.logger.info('Syncing task from ClickUp payload', {
+      installationId: context.installationId,
+      externalTaskId: input?.externalTaskId
     });
 
-    return {
-      system: SYSTEM,
-      accepted: true
-    };
+    return await syncTaskFromClickUp(input, context);
   }
 );

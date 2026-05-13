@@ -4,14 +4,14 @@ import { createClickUpClient } from '../lib/taskSync';
 
 const SYSTEM = 'clickup';
 
-export const listExternalProjects = defineHandler<void, ExternalEntity[], ClickUpConfig>(
+export const listExternalUsers = defineHandler<void, ExternalEntity[], ClickUpConfig>(
   async (_input, context) => {
-    context.logger.info('Listing ClickUp lists', {
+    context.logger.info('Listing ClickUp workspace members', {
       system: SYSTEM,
       installationId: context.installationId
     });
 
     const client = createClickUpClient(context);
-    return await client.listAllLists();
+    return await client.listAllMembers();
   }
 );

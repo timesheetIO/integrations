@@ -1,19 +1,15 @@
-import { defineHandler, TaskCreatedInput } from '@timesheet/integration-sdk';
+import { defineHandler } from '@timesheet/integration-sdk';
+import { ClickUpConfig, SyncInput } from '../lib/types';
+import { ClickUpSyncResult, syncTaskToClickUp } from '../lib/taskSync';
 
-const SYSTEM = 'clickup';
-
-export const syncTaskToExternal = defineHandler<TaskCreatedInput, { system: string; taskId: string; direction: string }>(
+export const syncTaskToExternal = defineHandler<SyncInput, ClickUpSyncResult, ClickUpConfig>(
   async (input, context) => {
-    context.logger.info('Syncing task to external system', {
-      system: SYSTEM,
-      taskId: input.taskId,
-      installationId: context.installationId
+    context.logger.info('Syncing task to ClickUp', {
+      installationId: context.installationId,
+      event: input?.event,
+      taskId: input?.taskId ?? input?.item?.id
     });
 
-    return {
-      system: SYSTEM,
-      taskId: input.taskId,
-      direction: 'timesheet-to-external'
-    };
+    return await syncTaskToClickUp(input, context);
   }
 );

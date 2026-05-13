@@ -125,6 +125,12 @@ beforeAll(() => {
     if (requestUrl.includes('www.googleapis.com/calendar/v3/calendars/')) {
       return createFetchResponse({ items: [], nextSyncToken: 'sync-token' });
     }
+    if (requestUrl.includes('api.clickup.com/api/v2/team') && !requestUrl.includes('/space')) {
+      return createFetchResponse({ teams: [{ id: 'clickup-team-1', name: 'Acme Team' }] });
+    }
+    if (requestUrl.includes('api.clickup.com/api/v2/list/') && requestUrl.includes('/task')) {
+      return createFetchResponse({ tasks: [], last_page: true });
+    }
 
     return createFetchResponse({});
   });
