@@ -6,6 +6,7 @@ This folder contains first-party plugin packages for the sandboxed plugin runtim
 
 - `@timesheet/plugin-clickup`
 - `@timesheet/plugin-asana`
+- `@timesheet/plugin-monday`
 - `@timesheet/plugin-xero`
 - `@timesheet/plugin-google-calendar`
 - `@timesheet/plugin-outlook-calendar`

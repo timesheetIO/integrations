@@ -1,0 +1,209 @@
+{
+  "id": "monday-sync",
+  "name": "monday.com Sync",
+  "version": "1.0.0",
+  "description": "Synchronize Timesheet tasks with monday.com",
+  "longDescription": "Bidirectional synchronization between Timesheet tasks and monday.com items. Map each Timesheet project to a monday.com board and your time entries will appear as items (or updates to existing items) with start and due dates. Inbound changes flow back through monday.com webhooks and scheduled syncs.",
+  "icon": "monday",
+  "category": "project-management",
+  "tags": ["sync", "timesheet", "monday", "project-management"],
+  "dataAccess": ["projects", "tasks", "colleagues", "settings"],
+  "externalAuth": [
+    {
+      "id": "monday",
+      "type": "oauth2",
+      "oauth": {
+        "authorizeUrl": "https://auth.monday.com/oauth2/authorize",
+        "tokenUrl": "https://auth.monday.com/oauth2/token",
+        "scopes": ["boards:read", "boards:write", "me:read"]
+      }
+    }
+  ],
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "syncDirection": {
+        "type": "string",
+        "title": "Sync Direction",
+        "enum": ["bidirectional", "timesheet-to-monday", "monday-to-timesheet"],
+        "default": "bidirectional",
+        "x-ui-widget": "radio"
+      },
+      "webhookSecret": {
+        "type": "string",
+        "title": "Webhook Secret",
+        "x-ui-widget": "password",
+        "x-ui-secret": true,
+        "x-ui-help": "Shared secret used to verify inbound monday.com webhooks. Required for inbound sync."
+      }
+    },
+    "required": ["syncDirection"]
+  },
+  "mappingSchema": {
+    "system": "monday",
+    "mappings": [
+      {
+        "id": "projects",
+        "title": "Project Mapping",
+        "description": "Map Timesheet projects to monday.com boards",
+        "localEntity": {
+          "type": "project",
+          "label": "Timesheet Project",
+          "display": "{{title}}"
+        },
+        "externalEntity": {
+          "type": "board",
+          "label": "monday.com Board",
+          "fetchAction": "list-external-projects"
+        },
+        "required": true,
+        "minMappings": 1
+      },
+      {
+        "id": "users",
+        "title": "User Mapping",
+        "description": "Map Timesheet users to monday.com workspace members. Optional — when configured, each user's time entries are assigned to their own monday.com account via the item's person column instead of the OAuth owner.",
+        "localEntity": {
+          "type": "user",
+          "label": "Timesheet User",
+          "display": "{{displayName}}"
+        },
+        "externalEntity": {
+          "type": "member",
+          "label": "monday.com User",
+          "fetchAction": "list-external-users"
+        },
+        "required": false,
+        "minMappings": 0
+      }
+    ]
+  },
+  "triggers": [
+    {
+      "id": "task-changed",
+      "type": "event",
+      "mode": "sync",
+      "name": "Task Changed",
+      "description": "Sync task create/update/delete events to monday.com",
+      "events": ["task.create", "task.update", "task.delete"],
+      "configurable": true,
+      "actionId": "handle-sync-batch"
+    },
+    {
+      "id": "integration-webhook",
+      "type": "webhook",
+      "name": "monday.com Webhook",
+      "description": "Receive inbound item changes from monday.com",
+      "configurable": false,
+      "actionId": "handle-webhook",
+      "webhook": {
+        "signature": {
+          "header": "authorization",
+          "algorithm": "jwt",
+          "secretConfigKey": "webhookSecret"
+        }
+      }
+    },
+    {
+      "id": "full-sync",
+      "type": "schedule",
+      "mode": "sync",
+      "name": "Scheduled Full Sync",
+      "description": "Run incremental synchronization for all mapped boards",
+      "schedule": "0 2 * * *",
+      "timezone": "UTC",
+      "configurable": true,
+      "events": ["task.create", "task.update", "task.delete"],
+      "actionId": "handle-sync-batch"
+    },
+    {
+      "id": "manual-sync",
+      "type": "user_action",
+      "name": "Manual Sync",
+      "description": "Trigger a sync from settings",
+      "userAction": {
+        "label": "Sync Now",
+        "placement": "settings"
+      },
+      "actionId": "run-full-sync"
+    }
+  ],
+  "actions": [
+    {
+      "id": "sync-task-to-external",
+      "name": "Sync task to monday.com",
+      "handler": "syncTaskToExternal"
+    },
+    {
+      "id": "handle-sync-batch",
+      "name": "Handle sync batch",
+      "handler": "handleSyncBatch"
+    },
+    {
+      "id": "sync-task-from-external",
+      "name": "Sync task from monday.com",
+      "handler": "syncTaskFromExternal",
+      "internal": true
+    },
+    {
+      "id": "handle-webhook",
+      "handler": "handleWebhook",
+      "internal": true
+    },
+    {
+      "id": "run-full-sync",
+      "name": "Run full sync",
+      "handler": "runFullSync"
+    },
+    {
+      "id": "test-connection",
+      "name": "Test connection",
+      "handler": "testConnection"
+    },
+    {
+      "id": "list-external-projects",
+      "handler": "listExternalProjects",
+      "internal": true
+    },
+    {
+      "id": "list-external-users",
+      "handler": "listExternalUsers",
+      "internal": true
+    }
+  ],
+  "pages": [
+    {
+      "id": "dashboard",
+      "title": "Sync Dashboard",
+      "icon": "chart-bar",
+      "layout": "dashboard",
+      "widgets": [
+        {
+          "id": "last-sync",
+          "type": "sync_summary",
+          "title": "Last Sync"
+        },
+        {
+          "id": "sync-stats",
+          "type": "sync_stats",
+          "title": "Sync Statistics"
+        },
+        {
+          "id": "connection-health",
+          "type": "connection_health",
+          "title": "Connection Health"
+        },
+        {
+          "id": "manual-sync-btn",
+          "type": "action_button",
+          "title": "Manual Sync",
+          "config": {
+            "actionId": "run-full-sync",
+            "label": "Run Full Sync",
+            "variant": "primary"
+          }
+        }
+      ]
+    }
+  ]
+}
