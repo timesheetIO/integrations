@@ -1,0 +1,167 @@
+{
+  "id": "google-health-sync",
+  "name": "Google Health",
+  "version": "1.0.0",
+  "description": "Import Google Health exercise sessions as Timesheet time entries",
+  "longDescription": "Reads workout sessions from Google Health and creates a Timesheet task on the project mapped to the corresponding exercise type. Read-only: no data is written back to Google Health.",
+  "icon": "google-health",
+  "category": "wellness",
+  "tags": ["sync", "timesheet", "google-health", "fitness", "wellness", "time-tracking"],
+  "dataAccess": ["projects", "tasks", "tags"],
+  "externalAuth": [
+    {
+      "id": "google",
+      "type": "oauth2",
+      "oauth": {
+        "authorizeUrl": "https://accounts.google.com/o/oauth2/v2/auth",
+        "tokenUrl": "https://oauth2.googleapis.com/token",
+        "scopes": ["https://www.googleapis.com/auth/health"],
+        "authorizationParams": {
+          "access_type": "offline",
+          "prompt": "consent"
+        }
+      }
+    }
+  ],
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "fallbackProjectId": {
+        "type": "string",
+        "title": "Fallback Project",
+        "x-ui-widget": "project-select",
+        "x-ui-help": "Used when an exercise type has no explicit mapping. Leave blank to skip unmapped types."
+      },
+      "lookbackDays": {
+        "type": "integer",
+        "title": "Initial Lookback (days)",
+        "default": 7,
+        "x-ui-help": "On first sync, how far back to import workouts (1-90 days)."
+      },
+      "syncTagId": {
+        "type": "string",
+        "title": "Tag to apply to imported tasks",
+        "x-ui-widget": "tag-select",
+        "x-ui-help": "Optional. Tags imported tasks so you can filter them in reports."
+      }
+    },
+    "required": []
+  },
+  "mappingSchema": {
+    "system": "google-health",
+    "mappings": [
+      {
+        "id": "exercise-types",
+        "title": "Exercise Type Mapping",
+        "description": "Map Google Health exercise types to Timesheet projects. Unmapped types fall back to the configured fallback project, or are skipped if none is set.",
+        "localEntity": {
+          "type": "project",
+          "label": "Timesheet Project",
+          "display": "{{title}}"
+        },
+        "externalEntity": {
+          "type": "exercise_type",
+          "label": "Google Health Exercise Type",
+          "fetchAction": "list-exercise-types"
+        },
+        "required": false,
+        "minMappings": 0
+      }
+    ]
+  },
+  "triggers": [
+    {
+      "id": "timesheet-changed",
+      "type": "event",
+      "mode": "sync",
+      "name": "Cleanup on Task Delete",
+      "description": "Remove workout mappings when imported tasks are deleted in Timesheet, so a later sync can re-import them.",
+      "events": ["task.delete"],
+      "configurable": false,
+      "actionId": "handle-sync-batch"
+    },
+    {
+      "id": "scheduled-sync",
+      "type": "schedule",
+      "name": "Hourly Workout Sync",
+      "description": "Pull new Google Health exercises and create Timesheet tasks on every hour.",
+      "schedule": "0 * * * *",
+      "timezone": "UTC",
+      "configurable": true,
+      "actionId": "handle-scheduled-sync"
+    },
+    {
+      "id": "manual-sync",
+      "type": "user_action",
+      "name": "Manual Sync",
+      "description": "Trigger an inbound sync from the integration settings page.",
+      "userAction": {
+        "label": "Sync workouts now",
+        "placement": "settings"
+      },
+      "actionId": "run-full-sync"
+    }
+  ],
+  "actions": [
+    {
+      "id": "test-connection",
+      "name": "Test connection",
+      "handler": "testConnection"
+    },
+    {
+      "id": "list-exercise-types",
+      "handler": "listExerciseTypes",
+      "internal": true
+    },
+    {
+      "id": "run-full-sync",
+      "name": "Run full sync",
+      "handler": "runFullSync"
+    },
+    {
+      "id": "handle-scheduled-sync",
+      "handler": "handleScheduledSync",
+      "internal": true
+    },
+    {
+      "id": "handle-sync-batch",
+      "handler": "handleSyncBatch",
+      "internal": true
+    }
+  ],
+  "pages": [
+    {
+      "id": "dashboard",
+      "title": "Sync Dashboard",
+      "icon": "chart-bar",
+      "layout": "dashboard",
+      "widgets": [
+        {
+          "id": "last-sync",
+          "type": "sync_summary",
+          "title": "Last Sync"
+        },
+        {
+          "id": "sync-stats",
+          "type": "sync_stats",
+          "title": "Workouts Imported"
+        },
+        {
+          "id": "connection-health",
+          "type": "connection_health",
+          "title": "Connection Health"
+        },
+        {
+          "id": "manual-sync-btn",
+          "type": "action_button",
+          "title": "Manual Sync",
+          "config": {
+            "actionId": "run-full-sync",
+            "label": "Sync Now",
+            "variant": "primary"
+          }
+        }
+      ]
+    }
+  ]
+}

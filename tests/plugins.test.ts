@@ -5,6 +5,7 @@ import type { IntegrationContext } from '@timesheet/integration-sdk';
 import * as asanaHandlers from '../asana/src';
 import * as clickupHandlers from '../clickup/src';
 import * as googleCalendarHandlers from '../google-calendar/src';
+import * as googleHealthHandlers from '../google-health/src';
 import * as mondayHandlers from '../monday/src';
 import * as outlookCalendarHandlers from '../outlook-calendar/src';
 import * as quickbooksHandlers from '../quickbooks/src';
@@ -43,6 +44,11 @@ const pluginFixtures: PluginFixture[] = [
     slug: 'google-calendar',
     manifestPath: path.resolve(__dirname, '../google-calendar/manifest.json'),
     handlers: googleCalendarHandlers
+  },
+  {
+    slug: 'google-health',
+    manifestPath: path.resolve(__dirname, '../google-health/manifest.json'),
+    handlers: googleHealthHandlers
   },
   {
     slug: 'outlook-calendar',
