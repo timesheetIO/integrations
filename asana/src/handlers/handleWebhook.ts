@@ -1,18 +1,14 @@
-import { defineHandler, WebhookInput } from '@timesheet/integration-sdk';
+import { defineHandler } from '@timesheet/integration-sdk';
+import { AsanaConfig, SyncInput } from '../lib/types';
+import { AsanaSyncResult, handleAsanaWebhook } from '../lib/taskSync';
 
-const SYSTEM = 'asana';
-
-export const handleWebhook = defineHandler<WebhookInput, { system: string; handled: boolean }>(
+export const handleWebhook = defineHandler<SyncInput, AsanaSyncResult, AsanaConfig>(
   async (input, context) => {
-    context.logger.info('Handling webhook', {
-      system: SYSTEM,
-      method: input.method,
-      installationId: context.installationId
+    context.logger.info('Handling Asana webhook', {
+      installationId: context.installationId,
+      hasBody: !!input?.body
     });
 
-    return {
-      system: SYSTEM,
-      handled: true
-    };
+    return await handleAsanaWebhook(input, context);
   }
 );

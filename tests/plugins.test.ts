@@ -5,6 +5,7 @@ import type { IntegrationContext } from '@timesheet/integration-sdk';
 import * as asanaHandlers from '../asana/src';
 import * as clickupHandlers from '../clickup/src';
 import * as googleCalendarHandlers from '../google-calendar/src';
+import * as mondayHandlers from '../monday/src';
 import * as outlookCalendarHandlers from '../outlook-calendar/src';
 import * as quickbooksHandlers from '../quickbooks/src';
 import * as xeroHandlers from '../xero/src';
@@ -27,6 +28,11 @@ const pluginFixtures: PluginFixture[] = [
     slug: 'asana',
     manifestPath: path.resolve(__dirname, '../asana/manifest.json'),
     handlers: asanaHandlers
+  },
+  {
+    slug: 'monday',
+    manifestPath: path.resolve(__dirname, '../monday/manifest.json'),
+    handlers: mondayHandlers
   },
   {
     slug: 'xero',
@@ -110,7 +116,7 @@ const createFetchResponse = (body: unknown) => ({
 });
 
 beforeAll(() => {
-  const fetchMock = jest.fn(async (url: RequestInfo | URL) => {
+  const fetchMock = jest.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
     const requestUrl = String(url);
 
     if (requestUrl.includes('quickbooks.api.intuit.com') && requestUrl.includes('companyinfo')) {
@@ -130,6 +136,22 @@ beforeAll(() => {
     }
     if (requestUrl.includes('api.clickup.com/api/v2/list/') && requestUrl.includes('/task')) {
       return createFetchResponse({ tasks: [], last_page: true });
+    }
+    if (requestUrl.includes('api.monday.com/v2')) {
+      const query = typeof init?.body === 'string' ? init.body : '';
+      if (query.includes('me {')) {
+        return createFetchResponse({ data: { me: { id: 'monday-user-1' } } });
+      }
+      if (query.includes('items_page')) {
+        return createFetchResponse({ data: { boards: [{ items_page: { cursor: null, items: [] } }] } });
+      }
+      if (query.includes('boards(')) {
+        return createFetchResponse({ data: { boards: [] } });
+      }
+      if (query.includes('users(')) {
+        return createFetchResponse({ data: { users: [] } });
+      }
+      return createFetchResponse({ data: {} });
     }
 
     return createFetchResponse({});

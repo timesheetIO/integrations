@@ -1,4 +1,3 @@
-import * as crypto from 'crypto';
 import {
   IntegrationContext,
   MappingRecord,
@@ -332,7 +331,13 @@ export async function runClickUpFullSync(
   }
 
   const client = getOrCreateClient(context);
-  const sinceMs = await context.state.get<number>(SYNC_STATE_KEY);
+  // Coerce defensively — the runtime has occasionally been observed handing
+  // back wrapper objects instead of the raw number we stored. Anything that
+  // isn't a finite positive epoch-ms value falls through to a full resync.
+  const rawSince = await context.state.get<unknown>(SYNC_STATE_KEY);
+  const sinceMs = typeof rawSince === 'number' && Number.isFinite(rawSince) && rawSince > 0
+    ? rawSince
+    : undefined;
   const startedAt = Date.now();
   let syncedCount = 0;
 
@@ -341,7 +346,7 @@ export async function runClickUpFullSync(
     if (!listId) {
       continue;
     }
-    const tasks = await client.listTasksForList(listId, { dateUpdatedGt: sinceMs ?? undefined });
+    const tasks = await client.listTasksForList(listId, { dateUpdatedGt: sinceMs });
     for (const task of tasks) {
       const synced = await syncSingleExternalTask(context, mapping, task);
       if (synced) {
@@ -389,7 +394,7 @@ export async function handleClickUpWebhook(
     return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason: 'missing-body' } };
   }
 
-  if (!verifyClickUpSignature(rawBody, signature, secret)) {
+  if (!(await verifyClickUpSignature(rawBody, signature, secret))) {
     context.logger.warn('ClickUp webhook rejected: signature mismatch');
     return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason: 'invalid-signature' } };
   }
@@ -800,14 +805,39 @@ function parseWebhookPayload(body: unknown, rawBody: string): ClickUpWebhookPayl
   return null;
 }
 
-function verifyClickUpSignature(rawBody: string, signatureHeader: string, secret: string): boolean {
-  const hmac = crypto.createHmac('sha256', secret);
-  hmac.update(rawBody, 'utf8');
-  const expected = hmac.digest('hex');
-  const expectedBuffer = Buffer.from(expected);
-  const actualBuffer = Buffer.from(signatureHeader);
-  if (expectedBuffer.length !== actualBuffer.length) {
+// Web Crypto is used so this plugin works in sandboxed runtimes (esbuild bundler
+// without Node built-ins). Both Node 18+ and the plugin runtime expose
+// `globalThis.crypto.subtle`.
+async function verifyClickUpSignature(rawBody: string, signatureHeader: string, secret: string): Promise<boolean> {
+  const encoder = new TextEncoder();
+  const key = await globalThis.crypto.subtle.importKey(
+    'raw',
+    encoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const signatureBuffer = await globalThis.crypto.subtle.sign('HMAC', key, encoder.encode(rawBody));
+  const expected = bufferToHex(signatureBuffer);
+  return constantTimeEquals(expected, signatureHeader);
+}
+
+function bufferToHex(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let out = '';
+  for (let i = 0; i < bytes.length; i++) {
+    out += bytes[i].toString(16).padStart(2, '0');
+  }
+  return out;
+}
+
+function constantTimeEquals(a: string, b: string): boolean {
+  if (a.length !== b.length) {
     return false;
   }
-  return crypto.timingSafeEqual(expectedBuffer, actualBuffer);
+  let result = 0;
+  for (let i = 0; i < a.length; i++) {
+    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return result === 0;
 }

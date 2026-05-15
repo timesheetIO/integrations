@@ -1,10 +1,12 @@
-import * as crypto from 'crypto';
 import {
   IntegrationContext,
   MappingRecord,
   TaskCreateInput,
   TaskDto,
-  TaskUpdateInput
+  TaskUpdateInput,
+  ToDoCreateInput,
+  ToDoDto,
+  ToDoUpdateInput
 } from '@timesheet/integration-sdk';
 import { MondayClient } from './mondayClient';
 import {
@@ -17,8 +19,10 @@ import {
 const SYSTEM = 'monday';
 const PROJECT_ENTITY = 'project';
 const TASK_ENTITY = 'task';
+const TODO_ENTITY = 'todo';
 const USER_ENTITY = 'user';
 const SYNC_STATE_KEY = 'monday:last-sync-time';
+const STATUS_COLUMN_ID = 'status';
 
 // monday.com identifies columns by id, which is configurable per board. We use
 // the conventional default ids that monday.com auto-creates on most templates;
@@ -38,6 +42,7 @@ export interface MondaySyncResult {
 export interface SyncBatchCaches {
   projectMappingByLocalId?: Map<string, MappingRecord>;
   taskMappingByLocalId?: Map<string, MappingRecord>;
+  todoMappingByLocalId?: Map<string, MappingRecord>;
   userMappingByLocalId?: Map<string, MappingRecord>;
 }
 
@@ -95,7 +100,7 @@ export async function syncTaskToMonday(
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'missing-project-mapping', projectId } };
   }
 
-  const boardId = projectMapping.externalId;
+  const projectBoardId = projectMapping.externalId;
   const client = getOrCreateClient(context);
   const taskMapping = await getMapping(context, caches?.taskMappingByLocalId, TASK_ENTITY, task.id);
 
@@ -124,6 +129,18 @@ export async function syncTaskToMonday(
     }
   }
 
+  // When the Timesheet task links to a synced ToDo, create the time entry as a
+  // subitem of that ToDo's monday.com item. Otherwise it lands as a standalone
+  // item on the project board (no parent).
+  let parentItemId: string | undefined;
+  const todoId = task.todo?.id;
+  if (todoId) {
+    const todoMapping = await getMapping(context, caches?.todoMappingByLocalId, TODO_ENTITY, todoId);
+    if (todoMapping?.externalId) {
+      parentItemId = todoMapping.externalId;
+    }
+  }
+
   let name: string;
   let columnValues: Record<string, unknown>;
   try {
@@ -135,18 +152,28 @@ export async function syncTaskToMonday(
   }
 
   let external: MondayItem;
+  // The board id for updates is the subitems board when this is a subitem.
+  // We persist it in the task mapping metadata so updates don't need an extra
+  // lookup; on the first sync we read it back from the API response.
+  const storedSubitemBoard = typeof taskMapping?.metadata?.boardId === 'string' ? taskMapping.metadata.boardId : undefined;
+
   if (taskMapping?.externalId) {
+    const updateBoardId = storedSubitemBoard || projectBoardId;
     try {
-      external = await client.updateItem(taskMapping.externalId, boardId, name, columnValues);
+      external = await client.updateItem(taskMapping.externalId, updateBoardId, name, columnValues);
     } catch (err) {
       if (String(err).toLowerCase().includes('not found')) {
-        external = await client.createItem(boardId, name, columnValues);
+        external = parentItemId
+          ? await client.createSubitem(parentItemId, name, columnValues)
+          : await client.createItem(projectBoardId, name, columnValues);
       } else {
         throw err;
       }
     }
+  } else if (parentItemId) {
+    external = await client.createSubitem(parentItemId, name, columnValues);
   } else {
-    external = await client.createItem(boardId, name, columnValues);
+    external = await client.createItem(projectBoardId, name, columnValues);
   }
 
   if (!external?.id) {
@@ -158,7 +185,11 @@ export async function syncTaskToMonday(
     externalId: external.id,
     externalLabel: external.name ?? task.description ?? task.id,
     metadata: {
-      boardId,
+      // For subitems this is the subitems board id (returned by monday); for
+      // standalone items it's the project board.
+      boardId: external.board?.id ?? projectBoardId,
+      projectBoardId,
+      parentItemId: parentItemId ?? '',
       updatedAt: external.updated_at ?? ''
     },
     syncStatus: 'SYNCED'
@@ -176,7 +207,104 @@ export async function syncTaskToMonday(
     system: SYSTEM,
     status: 'synced',
     syncedCount: 1,
-    details: { taskId: task.id, externalTaskId: external.id }
+    details: { taskId: task.id, externalTaskId: external.id, asSubitem: !!parentItemId }
+  };
+}
+
+export async function syncTodoToMonday(
+  input: SyncInput,
+  context: IntegrationContext<MondayConfig>,
+  caches?: SyncBatchCaches
+): Promise<MondaySyncResult> {
+  const syncDirection = context.config?.syncDirection ?? 'bidirectional';
+  if (syncDirection === 'monday-to-timesheet' || syncDirection === 'external-to-timesheet') {
+    return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'sync-direction-mismatch' } };
+  }
+
+  const todoId = resolveTodoId(input);
+  if (!todoId) {
+    return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'missing-todo-id' } };
+  }
+
+  const todo = await loadTodo(todoId, input, context);
+  if (!todo) {
+    return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'todo-not-found', todoId } };
+  }
+
+  const projectId = todo.project?.id;
+  if (!projectId) {
+    return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'missing-project', todoId } };
+  }
+
+  const projectMapping = await getMapping(context, caches?.projectMappingByLocalId, PROJECT_ENTITY, projectId);
+  if (!projectMapping?.externalId) {
+    return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'missing-project-mapping', projectId } };
+  }
+
+  const boardId = projectMapping.externalId;
+  const client = getOrCreateClient(context);
+  const todoMapping = await getMapping(context, caches?.todoMappingByLocalId, TODO_ENTITY, todo.id);
+
+  if (todo.deleted) {
+    if (todoMapping?.externalId) {
+      await client.deleteItem(todoMapping.externalId);
+      await context.mappings.delete({
+        system: SYSTEM,
+        entity: TODO_ENTITY,
+        localId: todo.id
+      });
+      caches?.todoMappingByLocalId?.delete(todo.id);
+      return { system: SYSTEM, status: 'deleted', syncedCount: 1 };
+    }
+    return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'already-deleted' } };
+  }
+
+  const name = (todo.name?.trim() || `Timesheet todo ${todo.id}`).slice(0, 255);
+  const columnValues = buildTodoColumnValues(todo);
+
+  let external: MondayItem;
+  if (todoMapping?.externalId) {
+    try {
+      external = await client.updateItem(todoMapping.externalId, boardId, name, columnValues);
+    } catch (err) {
+      if (String(err).toLowerCase().includes('not found')) {
+        external = await client.createItem(boardId, name, columnValues);
+      } else {
+        throw err;
+      }
+    }
+  } else {
+    external = await client.createItem(boardId, name, columnValues);
+  }
+
+  if (!external?.id) {
+    return { system: SYSTEM, status: 'failed', syncedCount: 0, details: { reason: 'missing-external-id' } };
+  }
+
+  const upsertedMapping: MappingRecord = {
+    localId: todo.id,
+    externalId: external.id,
+    externalLabel: external.name ?? todo.name,
+    metadata: {
+      boardId,
+      updatedAt: external.updated_at ?? ''
+    },
+    syncStatus: 'SYNCED'
+  };
+
+  await context.mappings.upsert({
+    system: SYSTEM,
+    entity: TODO_ENTITY,
+    ...upsertedMapping
+  });
+
+  caches?.todoMappingByLocalId?.set(todo.id, upsertedMapping);
+
+  return {
+    system: SYSTEM,
+    status: 'synced',
+    syncedCount: 1,
+    details: { todoId: todo.id, externalItemId: external.id }
   };
 }
 
@@ -206,7 +334,13 @@ export async function runMondayFullSync(
   }
 
   const client = getOrCreateClient(context);
-  const sinceMs = await context.state.get<number>(SYNC_STATE_KEY);
+  // Coerce defensively — the runtime has occasionally been observed handing
+  // back wrapper objects instead of the raw number we stored. Anything that
+  // isn't a finite positive epoch-ms value falls through to a full resync.
+  const rawSince = await context.state.get<unknown>(SYNC_STATE_KEY);
+  const sinceMs = typeof rawSince === 'number' && Number.isFinite(rawSince) && rawSince > 0
+    ? rawSince
+    : undefined;
   const startedAt = Date.now();
   let syncedCount = 0;
 
@@ -215,7 +349,7 @@ export async function runMondayFullSync(
     if (!boardId) {
       continue;
     }
-    const items = await client.listItemsForBoard(boardId, { updatedSinceMs: sinceMs ?? undefined });
+    const items = await client.listItemsForBoard(boardId, { updatedSinceMs: sinceMs });
     for (const item of items) {
       const synced = await syncSingleExternalItem(context, mapping, item);
       if (synced) {
@@ -267,7 +401,7 @@ export async function handleMondayWebhook(
     return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason: 'missing-signature' } };
   }
 
-  if (!verifyMondaySignature(authHeader, secret)) {
+  if (!(await verifyMondaySignature(authHeader, secret))) {
     context.logger.warn('monday.com webhook rejected: signature mismatch');
     return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason: 'invalid-signature' } };
   }
@@ -353,6 +487,19 @@ async function syncSingleExternalItem(
     return false;
   }
 
+  // Subitems represent Timesheet tasks (time entries) under their parent ToDo.
+  // Parent items represent Timesheet ToDos. Route inbound by parent_item.
+  if (external.parent_item?.id) {
+    return syncInboundTaskFromSubitem(context, projectMapping, external);
+  }
+  return syncInboundTodoFromItem(context, projectMapping, external);
+}
+
+async function syncInboundTaskFromSubitem(
+  context: IntegrationContext<MondayConfig>,
+  projectMapping: MappingRecord,
+  external: MondayItem
+): Promise<boolean> {
   const dateRange = toTaskDateRange(external);
   if (!dateRange) {
     return false;
@@ -381,7 +528,9 @@ async function syncSingleExternalItem(
       externalId: external.id,
       externalLabel: external.name ?? external.id,
       metadata: {
-        boardId: projectMapping.externalId ?? '',
+        boardId: external.board?.id ?? '',
+        projectBoardId: projectMapping.externalId ?? '',
+        parentItemId: external.parent_item?.id ?? '',
         updatedAt: external.updated_at ?? ''
       },
       syncStatus: 'SYNCED'
@@ -410,12 +559,81 @@ async function syncSingleExternalItem(
     externalId: external.id,
     externalLabel: external.name ?? external.id,
     metadata: {
-      boardId: projectMapping.externalId ?? '',
+      boardId: external.board?.id ?? '',
+      projectBoardId: projectMapping.externalId ?? '',
+      parentItemId: external.parent_item?.id ?? '',
       updatedAt: external.updated_at ?? ''
     },
     syncStatus: 'SYNCED'
   });
 
+  return true;
+}
+
+async function syncInboundTodoFromItem(
+  context: IntegrationContext<MondayConfig>,
+  projectMapping: MappingRecord,
+  external: MondayItem
+): Promise<boolean> {
+  const todoMapping = await context.mappings.findByExternal({
+    system: SYSTEM,
+    entity: TODO_ENTITY,
+    externalId: external.id
+  });
+
+  const name = external.name?.trim() || external.id;
+  const dueDate = extractDueDate(external);
+  const status = mapMondayStatusToLocal(external.column_values);
+
+  if (!todoMapping?.localId) {
+    const created = await context.data.createTodo({
+      projectId: projectMapping.localId,
+      name,
+      description: '',
+      dueDate,
+      status
+    } as ToDoCreateInput);
+
+    await context.mappings.upsert({
+      system: SYSTEM,
+      entity: TODO_ENTITY,
+      localId: created.id,
+      externalId: external.id,
+      externalLabel: external.name ?? external.id,
+      metadata: {
+        boardId: projectMapping.externalId ?? '',
+        updatedAt: external.updated_at ?? ''
+      },
+      syncStatus: 'SYNCED'
+    });
+    return true;
+  }
+
+  const existing = await context.data.getTodo(todoMapping.localId);
+  const externalUpdatedAt = parseMondayDateMs(external.updated_at);
+  if (existing?.lastUpdate && externalUpdatedAt && externalUpdatedAt <= existing.lastUpdate) {
+    return false;
+  }
+
+  await context.data.updateTodo(todoMapping.localId, {
+    name,
+    description: existing?.description ?? '',
+    dueDate,
+    status
+  } as ToDoUpdateInput);
+
+  await context.mappings.upsert({
+    system: SYSTEM,
+    entity: TODO_ENTITY,
+    localId: todoMapping.localId,
+    externalId: external.id,
+    externalLabel: external.name ?? external.id,
+    metadata: {
+      boardId: projectMapping.externalId ?? '',
+      updatedAt: external.updated_at ?? ''
+    },
+    syncStatus: 'SYNCED'
+  });
   return true;
 }
 
@@ -453,7 +671,11 @@ async function findProjectMappingForItem(
   external: MondayItem,
   hintedBoardId?: number | string
 ): Promise<MappingRecord | null> {
-  const boardId = String(hintedBoardId ?? external.board?.id ?? '');
+  // Subitems live on a sibling "subitems board" — we want the parent item's
+  // board for matching project mappings. Fall back to the item's own board
+  // for parent items, and finally the webhook hint.
+  const subitemParentBoard = external.parent_item?.board?.id;
+  const boardId = String(subitemParentBoard ?? external.board?.id ?? hintedBoardId ?? '');
   if (!boardId) {
     return null;
   }
@@ -486,6 +708,10 @@ async function loadTask(
     if (!raw.project && projectId) {
       raw.project = { id: projectId };
     }
+    const todoId = raw.todoId as string | undefined;
+    if (!raw.todo && todoId) {
+      raw.todo = { id: todoId };
+    }
     if (!raw.id && raw.taskId) {
       raw.id = raw.taskId;
     }
@@ -498,8 +724,35 @@ async function loadTask(
   }
 }
 
+async function loadTodo(
+  todoId: string,
+  input: SyncInput,
+  context: IntegrationContext<MondayConfig>
+): Promise<ToDoDto | null> {
+  if (input?.item && typeof input.item === 'object' && (input.item.id || input.item.todoId)) {
+    const raw = input.item as Record<string, unknown>;
+    const projectId = raw.projectId as string | undefined;
+    if (!raw.project && projectId) {
+      raw.project = { id: projectId };
+    }
+    if (!raw.id && raw.todoId) {
+      raw.id = raw.todoId;
+    }
+    return raw as unknown as ToDoDto;
+  }
+  try {
+    return await context.data.getTodo(todoId);
+  } catch {
+    return null;
+  }
+}
+
 function resolveTaskId(input: SyncInput): string | undefined {
   return input?.taskId || input?.item?.taskId || input?.item?.id;
+}
+
+function resolveTodoId(input: SyncInput): string | undefined {
+  return input?.todoId || input?.item?.todoId || input?.item?.id;
 }
 
 function buildItemName(task: TaskDto): string {
@@ -545,6 +798,42 @@ function buildMondayColumnValues(task: TaskDto, externalUserId?: string): Record
   }
 
   return values;
+}
+
+function buildTodoColumnValues(todo: ToDoDto): Record<string, unknown> {
+  const values: Record<string, unknown> = {};
+
+  if (todo.dueDate) {
+    const due = parseDate(todo.dueDate);
+    if (due) {
+      values[DATE_DUE_COLUMN_ID] = formatMondayDate(due);
+    }
+  }
+
+  // monday.com status columns are workspace-defined. We only mark "closed"
+  // ToDos by sending the canonical "Done" label; "open" is left untouched so
+  // the workspace's default status is preserved.
+  if (typeof todo.status === 'number' && todo.status === 1) {
+    values[STATUS_COLUMN_ID] = { label: 'Done' };
+  }
+
+  return values;
+}
+
+function extractDueDate(external: MondayItem): string | undefined {
+  const due = pickDateColumn(external.column_values, DATE_DUE_COLUMN_ID);
+  return due ? new Date(due).toISOString() : undefined;
+}
+
+function mapMondayStatusToLocal(columns: MondayItem['column_values']): number | undefined {
+  const status = columns?.find((column) => column.id === STATUS_COLUMN_ID);
+  const label = (status?.text ?? '').trim().toLowerCase();
+  if (!label) {
+    return undefined;
+  }
+  // Mirror the outbound rule: only "Done" (and obvious synonyms) flip the ToDo
+  // to closed. Anything else leaves it open.
+  return label === 'done' || label === 'closed' || label === 'complete' || label === 'completed' ? 1 : 0;
 }
 
 function formatMondayDate(date: Date): { date: string; time: string } {
@@ -682,7 +971,10 @@ function parseWebhookPayload(body: unknown, rawBody: string | undefined): Monday
   return null;
 }
 
-function verifyMondaySignature(authHeader: string, secret: string): boolean {
+// Web Crypto is used so this plugin works in sandboxed runtimes (esbuild bundler
+// without Node built-ins). Both Node 18+ and the plugin runtime expose
+// `globalThis.crypto.subtle`.
+async function verifyMondaySignature(authHeader: string, secret: string): Promise<boolean> {
   // monday.com signs webhook deliveries with a JWT (HS256) in the Authorization
   // header. Anything else is treated as invalid.
   const token = authHeader.replace(/^Bearer\s+/i, '').trim();
@@ -691,18 +983,44 @@ function verifyMondaySignature(authHeader: string, secret: string): boolean {
     return false;
   }
   const [headerB64, payloadB64, signatureB64] = parts;
-  const expected = crypto
-    .createHmac('sha256', secret)
-    .update(`${headerB64}.${payloadB64}`)
-    .digest('base64')
-    .replace(/=+$/g, '')
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_');
 
-  const expectedBuffer = Buffer.from(expected);
-  const actualBuffer = Buffer.from(signatureB64);
-  if (expectedBuffer.length !== actualBuffer.length) {
+  const encoder = new TextEncoder();
+  const key = await globalThis.crypto.subtle.importKey(
+    'raw',
+    encoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const signatureBuffer = await globalThis.crypto.subtle.sign(
+    'HMAC',
+    key,
+    encoder.encode(`${headerB64}.${payloadB64}`)
+  );
+  const expected = bufferToBase64Url(signatureBuffer);
+  return constantTimeEquals(expected, signatureB64);
+}
+
+function bufferToBase64Url(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  const base64 = typeof btoa === 'function'
+    ? btoa(binary)
+    // Fallback for environments where btoa isn't a global (older Node test runs).
+    : Buffer.from(binary, 'binary').toString('base64');
+  return base64.replace(/=+$/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+}
+
+function constantTimeEquals(a: string, b: string): boolean {
+  if (a.length !== b.length) {
     return false;
   }
-  return crypto.timingSafeEqual(expectedBuffer, actualBuffer);
+  let result = 0;
+  for (let i = 0; i < a.length; i++) {
+    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return result === 0;
 }

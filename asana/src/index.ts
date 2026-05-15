@@ -1,5 +1,8 @@
 export { syncTaskToExternal } from './handlers/syncTaskToExternal';
 export { syncTaskFromExternal } from './handlers/syncTaskFromExternal';
+export { syncTodoToExternal } from './handlers/syncTodoToExternal';
+export { syncTodoFromExternal } from './handlers/syncTodoFromExternal';
+export { handleSyncBatch } from './handlers/handleSyncBatch';
 export { handleWebhook } from './handlers/handleWebhook';
 export { runFullSync } from './handlers/runFullSync';
 export { testConnection } from './handlers/testConnection';

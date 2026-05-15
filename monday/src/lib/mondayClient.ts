@@ -131,6 +131,7 @@ export class MondayClient {
               created_at
               updated_at
               board { id name }
+              parent_item { id board { id } }
               column_values {
                 id
                 type
@@ -162,6 +163,7 @@ export class MondayClient {
               created_at
               updated_at
               board { id name }
+              parent_item { id board { id } }
               column_values {
                 id
                 type
@@ -180,10 +182,15 @@ export class MondayClient {
       cursor = page?.cursor ?? null;
     }
 
-    if (options?.updatedSinceMs && options.updatedSinceMs > 0) {
+    if (
+      typeof options?.updatedSinceMs === 'number'
+      && Number.isFinite(options.updatedSinceMs)
+      && options.updatedSinceMs > 0
+    ) {
+      const since = options.updatedSinceMs;
       return collected.filter((item) => {
         const updatedAt = parseMondayDate(item.updated_at);
-        return updatedAt === null || updatedAt > (options.updatedSinceMs as number);
+        return updatedAt === null || updatedAt > since;
       });
     }
     return collected;
@@ -199,6 +206,7 @@ export class MondayClient {
           created_at
           updated_at
           board { id name }
+          parent_item { id board { id } }
           column_values {
             id
             type
@@ -234,6 +242,30 @@ export class MondayClient {
       throw new Error('monday.com create_item returned no item');
     }
     return data.create_item;
+  }
+
+  async createSubitem(
+    parentItemId: string,
+    name: string,
+    columnValues: Record<string, unknown>
+  ): Promise<MondayItem> {
+    const data = await this.graphql<{ create_subitem?: MondayItem }>(
+      `mutation ($parentItemId: ID!, $name: String!, $columnValues: JSON) {
+        create_subitem(parent_item_id: $parentItemId, item_name: $name, column_values: $columnValues) {
+          id
+          name
+          state
+          updated_at
+          board { id name }
+          parent_item { id board { id } }
+        }
+      }`,
+      { parentItemId, name, columnValues: JSON.stringify(columnValues) }
+    );
+    if (!data?.create_subitem) {
+      throw new Error('monday.com create_subitem returned no item');
+    }
+    return data.create_subitem;
   }
 
   async updateItem(

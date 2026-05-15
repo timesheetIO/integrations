@@ -39,6 +39,7 @@ export interface MondayItem {
   created_at?: string;
   updated_at?: string;
   board?: { id?: string; name?: string };
+  parent_item?: { id?: string; board?: { id?: string } } | null;
   column_values?: MondayColumnValue[];
 }
 
@@ -79,7 +80,18 @@ export interface SyncInput {
   event?: string;
   triggerId?: string;
   taskId?: string;
-  item?: Partial<TaskDto> & { taskId?: string; id?: string; projectId?: string };
+  todoId?: string;
+  item?: Partial<TaskDto> & {
+    taskId?: string;
+    todoId?: string;
+    id?: string;
+    projectId?: string;
+    name?: string;
+    status?: number | { status?: string };
+    estimatedHours?: number;
+    estimatedMinutes?: number;
+    dueDate?: string;
+  };
   externalTaskId?: string;
   method?: string;
   headers?: Record<string, string>;

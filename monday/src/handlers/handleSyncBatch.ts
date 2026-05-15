@@ -1,10 +1,11 @@
 import { defineHandler, MappingRecord, SyncModeInput } from '@timesheet/integration-sdk';
 import { MondayConfig, SyncInput } from '../lib/types';
-import { MondaySyncResult, syncTaskToMonday } from '../lib/taskSync';
+import { MondaySyncResult, syncTaskToMonday, syncTodoToMonday } from '../lib/taskSync';
 
 const SYSTEM = 'monday';
 const PROJECT_ENTITY = 'project';
 const TASK_ENTITY = 'task';
+const TODO_ENTITY = 'todo';
 const USER_ENTITY = 'user';
 
 export const handleSyncBatch = defineHandler<SyncModeInput, MondaySyncResult, MondayConfig>(
@@ -16,9 +17,10 @@ export const handleSyncBatch = defineHandler<SyncModeInput, MondaySyncResult, Mo
       hasMore: input.hasMore
     });
 
-    const [projectMappings, taskMappings, userMappings] = await Promise.all([
+    const [projectMappings, taskMappings, todoMappings, userMappings] = await Promise.all([
       context.mappings.list({ system: SYSTEM, entity: PROJECT_ENTITY }),
       context.mappings.list({ system: SYSTEM, entity: TASK_ENTITY }),
+      context.mappings.list({ system: SYSTEM, entity: TODO_ENTITY }),
       context.mappings.list({ system: SYSTEM, entity: USER_ENTITY })
     ]);
 
@@ -30,44 +32,63 @@ export const handleSyncBatch = defineHandler<SyncModeInput, MondaySyncResult, Mo
     for (const mapping of taskMappings) {
       taskMappingByLocalId.set(mapping.localId, mapping);
     }
+    const todoMappingByLocalId = new Map<string, MappingRecord>();
+    for (const mapping of todoMappings) {
+      todoMappingByLocalId.set(mapping.localId, mapping);
+    }
     const userMappingByLocalId = new Map<string, MappingRecord>();
     for (const mapping of userMappings) {
       userMappingByLocalId.set(mapping.localId, mapping);
     }
 
     let syncedCount = 0;
-    const errors: Array<{ entityId: string; error: string }> = [];
+    const errors: Array<{ entityType: string; entityId: string; error: string }> = [];
 
-    for (const change of input.changes) {
-      if (change.entityType !== 'task') {
+    // ToDos first so their mapping exists when subsequent task changes resolve
+    // the parent item id for subitem creation.
+    const ordered = [...input.changes].sort((a, b) => {
+      const aTodo = a.entityType === 'todo' ? 0 : 1;
+      const bTodo = b.entityType === 'todo' ? 0 : 1;
+      return aTodo - bTodo;
+    });
+
+    for (const change of ordered) {
+      if (change.entityType !== 'task' && change.entityType !== 'todo') {
         continue;
       }
 
       try {
-        const event = change.op === 'DELETE' ? 'task.delete' : 'task.update';
+        const event = `${change.entityType}.${change.op === 'DELETE' ? 'delete' : 'update'}`;
         const item = change.item as unknown as SyncInput['item'];
-        const result = await syncTaskToMonday(
-          {
-            event,
-            taskId: change.entityId,
-            item
-          },
-          context,
-          { projectMappingByLocalId, taskMappingByLocalId, userMappingByLocalId }
-        );
+        const result = change.entityType === 'todo'
+          ? await syncTodoToMonday(
+              { event, todoId: change.entityId, item },
+              context,
+              { projectMappingByLocalId, taskMappingByLocalId, todoMappingByLocalId, userMappingByLocalId }
+            )
+          : await syncTaskToMonday(
+              { event, taskId: change.entityId, item },
+              context,
+              { projectMappingByLocalId, taskMappingByLocalId, todoMappingByLocalId, userMappingByLocalId }
+            );
 
         if (result.status === 'synced' || result.status === 'deleted') {
           syncedCount++;
         } else if (result.status === 'skipped') {
-          context.logger.debug('Change skipped', { entityId: change.entityId, reason: result.details?.reason });
+          context.logger.debug('Change skipped', {
+            entityType: change.entityType,
+            entityId: change.entityId,
+            reason: result.details?.reason
+          });
         }
       } catch (err) {
         context.logger.error('Failed to sync change', {
+          entityType: change.entityType,
           entityId: change.entityId,
           op: change.op,
           error: String(err)
         });
-        errors.push({ entityId: change.entityId, error: String(err) });
+        errors.push({ entityType: change.entityType, entityId: change.entityId, error: String(err) });
       }
     }
 

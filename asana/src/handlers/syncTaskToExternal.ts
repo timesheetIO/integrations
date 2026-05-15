@@ -1,19 +1,15 @@
-import { defineHandler, TaskCreatedInput } from '@timesheet/integration-sdk';
+import { defineHandler } from '@timesheet/integration-sdk';
+import { AsanaConfig, SyncInput } from '../lib/types';
+import { AsanaSyncResult, syncTimesheetTaskToAsana } from '../lib/taskSync';
 
-const SYSTEM = 'asana';
-
-export const syncTaskToExternal = defineHandler<TaskCreatedInput, { system: string; taskId: string; direction: string }>(
+export const syncTaskToExternal = defineHandler<SyncInput, AsanaSyncResult, AsanaConfig>(
   async (input, context) => {
-    context.logger.info('Syncing task to external system', {
-      system: SYSTEM,
-      taskId: input.taskId,
-      installationId: context.installationId
+    context.logger.info('Syncing Timesheet task → Asana time entry', {
+      installationId: context.installationId,
+      taskId: input?.taskId ?? input?.item?.id,
+      event: input?.event
     });
 
-    return {
-      system: SYSTEM,
-      taskId: input.taskId,
-      direction: 'timesheet-to-external'
-    };
+    return await syncTimesheetTaskToAsana(input, context);
   }
 );

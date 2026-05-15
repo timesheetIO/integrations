@@ -1,13 +1,13 @@
 {
   "id": "monday-sync",
   "name": "monday.com Sync",
-  "version": "1.0.0",
-  "description": "Synchronize Timesheet tasks with monday.com",
-  "longDescription": "Bidirectional synchronization between Timesheet tasks and monday.com items. Map each Timesheet project to a monday.com board and your time entries will appear as items (or updates to existing items) with start and due dates. Inbound changes flow back through monday.com webhooks and scheduled syncs.",
+  "version": "1.1.0",
+  "description": "Synchronize Timesheet tasks and todos with monday.com",
+  "longDescription": "Bidirectional synchronization between Timesheet and monday.com. Timesheet ToDos are mirrored as monday.com items inside the mapped board, and Timesheet time entries are pushed as subitems of the corresponding item (or as a standalone item on the board when no ToDo is linked).",
   "icon": "monday",
   "category": "project-management",
-  "tags": ["sync", "timesheet", "monday", "project-management"],
-  "dataAccess": ["projects", "tasks", "colleagues", "settings"],
+  "tags": ["sync", "timesheet", "monday", "project-management", "time-tracking"],
+  "dataAccess": ["projects", "tasks", "todos", "colleagues", "settings"],
   "externalAuth": [
     {
       "id": "monday",
@@ -80,12 +80,19 @@
   },
   "triggers": [
     {
-      "id": "task-changed",
+      "id": "timesheet-changed",
       "type": "event",
       "mode": "sync",
-      "name": "Task Changed",
-      "description": "Sync task create/update/delete events to monday.com",
-      "events": ["task.create", "task.update", "task.delete"],
+      "name": "Timesheet Changes",
+      "description": "Sync task and todo create/update/delete events to monday.com",
+      "events": [
+        "task.create",
+        "task.update",
+        "task.delete",
+        "todo.create",
+        "todo.update",
+        "todo.delete"
+      ],
       "configurable": true,
       "actionId": "handle-sync-batch"
     },
@@ -113,7 +120,14 @@
       "schedule": "0 2 * * *",
       "timezone": "UTC",
       "configurable": true,
-      "events": ["task.create", "task.update", "task.delete"],
+      "events": [
+        "task.create",
+        "task.update",
+        "task.delete",
+        "todo.create",
+        "todo.update",
+        "todo.delete"
+      ],
       "actionId": "handle-sync-batch"
     },
     {
@@ -131,8 +145,13 @@
   "actions": [
     {
       "id": "sync-task-to-external",
-      "name": "Sync task to monday.com",
+      "name": "Sync time entry to monday.com",
       "handler": "syncTaskToExternal"
+    },
+    {
+      "id": "sync-todo-to-external",
+      "name": "Sync todo to monday.com",
+      "handler": "syncTodoToExternal"
     },
     {
       "id": "handle-sync-batch",

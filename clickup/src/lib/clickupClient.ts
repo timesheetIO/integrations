@@ -147,8 +147,12 @@ export class ClickUpClient {
         include_closed: 'true',
         page: String(page)
       });
-      if (options?.dateUpdatedGt) {
-        params.set('date_updated_gt', String(options.dateUpdatedGt));
+      if (
+        typeof options?.dateUpdatedGt === 'number'
+        && Number.isFinite(options.dateUpdatedGt)
+        && options.dateUpdatedGt > 0
+      ) {
+        params.set('date_updated_gt', String(Math.floor(options.dateUpdatedGt)));
       }
       const response = await this.request<ClickUpTasksResponse>(
         'GET',
