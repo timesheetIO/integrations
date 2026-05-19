@@ -10,6 +10,7 @@ import {
 } from '@timesheet/integration-sdk';
 import { MondayClient } from './mondayClient';
 import {
+  MondayBoardColumns,
   MondayConfig,
   MondayItem,
   MondayWebhookPayload,
@@ -24,13 +25,16 @@ const USER_ENTITY = 'user';
 const SYNC_STATE_KEY = 'monday:last-sync-time';
 const STATUS_COLUMN_ID = 'status';
 
-// monday.com identifies columns by id, which is configurable per board. We use
-// the conventional default ids that monday.com auto-creates on most templates;
-// when an item lacks them we fall back to the item.updated_at timestamp.
-const DATE_START_COLUMN_ID = 'date';
-const DATE_DUE_COLUMN_ID = 'date_1';
-const TIMELINE_COLUMN_ID = 'timeline';
-const PERSON_COLUMN_ID = 'person';
+// Titles used when the plugin has to create its own date columns. monday.com
+// generates random ids for new columns, but the title is what users see.
+const TIMESHEET_START_COLUMN_TITLE = 'Timesheet Start';
+const TIMESHEET_END_COLUMN_TITLE = 'Timesheet End';
+
+const DEFAULT_ITEM_NAME_TEMPLATE = 'Timesheet entry {startDate} {startTime}–{endTime}';
+
+function boardColumnsCacheKey(boardId: string): string {
+  return `monday:columns:${boardId}`;
+}
 
 export interface MondaySyncResult {
   system: string;
@@ -142,12 +146,10 @@ export async function syncTaskToMonday(
   }
 
   let name: string;
-  let columnValues: Record<string, unknown>;
   try {
-    name = buildItemName(task);
-    columnValues = buildMondayColumnValues(task, externalUserId);
+    name = buildItemName(task, context.config?.itemNameTemplate);
   } catch (err) {
-    context.logger.warn('Failed to build monday.com item payload', { taskId: task.id, error: String(err) });
+    context.logger.warn('Failed to build monday.com item name', { taskId: task.id, error: String(err) });
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'invalid-task-data', taskId: task.id } };
   }
 
@@ -159,21 +161,26 @@ export async function syncTaskToMonday(
 
   if (taskMapping?.externalId) {
     const updateBoardId = storedSubitemBoard || projectBoardId;
+    const cols = await ensureBoardColumns(context, client, updateBoardId);
+    const columnValues = buildColumnValuesOrSkip(task, externalUserId, cols, context);
+    if (!columnValues) {
+      return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'invalid-task-data', taskId: task.id } };
+    }
     try {
       external = await client.updateItem(taskMapping.externalId, updateBoardId, name, columnValues);
     } catch (err) {
       if (String(err).toLowerCase().includes('not found')) {
         external = parentItemId
-          ? await client.createSubitem(parentItemId, name, columnValues)
-          : await client.createItem(projectBoardId, name, columnValues);
+          ? await createSubitemWithColumns(client, context, parentItemId, name, task, externalUserId)
+          : await createItemWithColumns(client, context, projectBoardId, name, task, externalUserId);
       } else {
         throw err;
       }
     }
   } else if (parentItemId) {
-    external = await client.createSubitem(parentItemId, name, columnValues);
+    external = await createSubitemWithColumns(client, context, parentItemId, name, task, externalUserId);
   } else {
-    external = await client.createItem(projectBoardId, name, columnValues);
+    external = await createItemWithColumns(client, context, projectBoardId, name, task, externalUserId);
   }
 
   if (!external?.id) {
@@ -260,7 +267,8 @@ export async function syncTodoToMonday(
   }
 
   const name = (todo.name?.trim() || `Timesheet todo ${todo.id}`).slice(0, 255);
-  const columnValues = buildTodoColumnValues(todo);
+  const cols = await ensureBoardColumns(context, client, boardId);
+  const columnValues = buildTodoColumnValues(todo, cols);
 
   let external: MondayItem;
   if (todoMapping?.externalId) {
@@ -312,6 +320,7 @@ export async function runMondayFullSync(
   context: IntegrationContext<MondayConfig>
 ): Promise<MondaySyncResult> {
   const syncDirection = context.config?.syncDirection ?? 'bidirectional';
+  const allowOutbound = syncDirection !== 'monday-to-timesheet' && syncDirection !== 'external-to-timesheet';
   const allowInbound = syncDirection !== 'timesheet-to-monday' && syncDirection !== 'timesheet-to-external';
 
   const projectMappings = await context.mappings.list({ system: SYSTEM, entity: PROJECT_ENTITY });
@@ -324,16 +333,28 @@ export async function runMondayFullSync(
     };
   }
 
-  if (!allowInbound) {
-    return {
-      system: SYSTEM,
-      status: 'completed',
-      syncedCount: 0,
-      details: { syncDirection, reason: 'outbound-only' }
-    };
-  }
+  const [taskMappings, todoMappings, userMappings] = await Promise.all([
+    context.mappings.list({ system: SYSTEM, entity: TASK_ENTITY }),
+    context.mappings.list({ system: SYSTEM, entity: TODO_ENTITY }),
+    context.mappings.list({ system: SYSTEM, entity: USER_ENTITY })
+  ]);
 
-  const client = getOrCreateClient(context);
+  const projectMappingByLocalId = new Map<string, MappingRecord>();
+  for (const m of projectMappings) projectMappingByLocalId.set(m.localId, m);
+  const taskMappingByLocalId = new Map<string, MappingRecord>();
+  for (const m of taskMappings) taskMappingByLocalId.set(m.localId, m);
+  const todoMappingByLocalId = new Map<string, MappingRecord>();
+  for (const m of todoMappings) todoMappingByLocalId.set(m.localId, m);
+  const userMappingByLocalId = new Map<string, MappingRecord>();
+  for (const m of userMappings) userMappingByLocalId.set(m.localId, m);
+
+  const caches: SyncBatchCaches = {
+    projectMappingByLocalId,
+    taskMappingByLocalId,
+    todoMappingByLocalId,
+    userMappingByLocalId
+  };
+
   // Coerce defensively — the runtime has occasionally been observed handing
   // back wrapper objects instead of the raw number we stored. Anything that
   // isn't a finite positive epoch-ms value falls through to a full resync.
@@ -342,18 +363,82 @@ export async function runMondayFullSync(
     ? rawSince
     : undefined;
   const startedAt = Date.now();
-  let syncedCount = 0;
 
-  for (const mapping of projectMappings) {
-    const boardId = mapping.externalId;
-    if (!boardId) {
-      continue;
+  let outboundCount = 0;
+  let inboundCount = 0;
+  const errors: Array<{ direction: 'outbound' | 'inbound'; entityType: string; entityId: string; error: string }> = [];
+
+  if (allowOutbound) {
+    // ToDos first across all projects so subitem parents exist when their
+    // time entries push as subitems.
+    for (const projectMapping of projectMappings) {
+      if (!projectMapping.externalId) continue;
+      try {
+        for await (const todo of iterateLocalTodos(context, projectMapping.localId)) {
+          if (todo.deleted) continue;
+          if (sinceMs && typeof todo.lastUpdate === 'number' && todo.lastUpdate <= sinceMs) continue;
+          try {
+            const result = await syncTodoToMonday(
+              { event: 'todo.update', todoId: todo.id, item: todo as unknown as SyncInput['item'] },
+              context,
+              caches
+            );
+            if (result.status === 'synced' || result.status === 'deleted') outboundCount += 1;
+          } catch (err) {
+            errors.push({ direction: 'outbound', entityType: TODO_ENTITY, entityId: todo.id, error: String(err) });
+            context.logger.warn('Outbound todo backfill failed', { todoId: todo.id, error: String(err) });
+          }
+        }
+      } catch (err) {
+        errors.push({ direction: 'outbound', entityType: 'project-todos', entityId: projectMapping.localId, error: String(err) });
+        context.logger.error('Failed to list todos for outbound backfill', { projectId: projectMapping.localId, error: String(err) });
+      }
     }
-    const items = await client.listItemsForBoard(boardId, { updatedSinceMs: sinceMs });
-    for (const item of items) {
-      const synced = await syncSingleExternalItem(context, mapping, item);
-      if (synced) {
-        syncedCount += 1;
+
+    for (const projectMapping of projectMappings) {
+      if (!projectMapping.externalId) continue;
+      try {
+        for await (const task of iterateLocalTasks(context, projectMapping.localId)) {
+          if (task.deleted || task.running) continue;
+          if (sinceMs && typeof task.lastUpdate === 'number' && task.lastUpdate <= sinceMs) continue;
+          try {
+            const result = await syncTaskToMonday(
+              { event: 'task.update', taskId: task.id, item: task as unknown as SyncInput['item'] },
+              context,
+              caches
+            );
+            if (result.status === 'synced' || result.status === 'deleted') outboundCount += 1;
+          } catch (err) {
+            errors.push({ direction: 'outbound', entityType: TASK_ENTITY, entityId: task.id, error: String(err) });
+            context.logger.warn('Outbound task backfill failed', { taskId: task.id, error: String(err) });
+          }
+        }
+      } catch (err) {
+        errors.push({ direction: 'outbound', entityType: 'project-tasks', entityId: projectMapping.localId, error: String(err) });
+        context.logger.error('Failed to list tasks for outbound backfill', { projectId: projectMapping.localId, error: String(err) });
+      }
+    }
+  }
+
+  if (allowInbound) {
+    const client = getOrCreateClient(context);
+    for (const mapping of projectMappings) {
+      const boardId = mapping.externalId;
+      if (!boardId) continue;
+      try {
+        const items = await client.listItemsForBoard(boardId, { updatedSinceMs: sinceMs });
+        for (const item of items) {
+          try {
+            const synced = await syncSingleExternalItem(context, mapping, item);
+            if (synced) inboundCount += 1;
+          } catch (err) {
+            errors.push({ direction: 'inbound', entityType: 'item', entityId: item.id, error: String(err) });
+            context.logger.warn('Inbound item sync failed', { itemId: item.id, boardId, error: String(err) });
+          }
+        }
+      } catch (err) {
+        errors.push({ direction: 'inbound', entityType: 'board', entityId: boardId, error: String(err) });
+        context.logger.error('Failed to list board items for inbound sync', { boardId, error: String(err) });
       }
     }
   }
@@ -362,10 +447,55 @@ export async function runMondayFullSync(
 
   return {
     system: SYSTEM,
-    status: 'completed',
-    syncedCount,
-    details: { syncDirection, sinceMs: sinceMs ?? null, boardCount: projectMappings.length }
+    status: errors.length > 0 ? 'partial' : 'completed',
+    syncedCount: outboundCount + inboundCount,
+    details: {
+      syncDirection,
+      sinceMs: sinceMs ?? null,
+      boardCount: projectMappings.length,
+      outboundCount,
+      inboundCount,
+      errors: errors.length > 0 ? errors : undefined
+    }
   };
+}
+
+async function* iterateLocalTodos(
+  context: IntegrationContext<MondayConfig>,
+  projectId: string
+): AsyncGenerator<ToDoDto> {
+  const pageSize = 100;
+  let page = 1;
+  while (true) {
+    const result = await context.data.listTodos({ projectId, page, count: pageSize });
+    const items = result?.items ?? [];
+    for (const todo of items) yield todo;
+    if (items.length < pageSize) break;
+    page += 1;
+  }
+}
+
+async function* iterateLocalTasks(
+  context: IntegrationContext<MondayConfig>,
+  projectId: string
+): AsyncGenerator<TaskDto> {
+  const pageSize = 100;
+  let page = 1;
+  while (true) {
+    const result = await context.data.listTasks({
+      projectId,
+      page,
+      count: pageSize,
+      populatePauses: false,
+      populateExpenses: false,
+      populateNotes: false,
+      populateTags: false
+    });
+    const items = result?.items ?? [];
+    for (const task of items) yield task;
+    if (items.length < pageSize) break;
+    page += 1;
+  }
 }
 
 export async function handleMondayWebhook(
@@ -500,7 +630,11 @@ async function syncInboundTaskFromSubitem(
   projectMapping: MappingRecord,
   external: MondayItem
 ): Promise<boolean> {
-  const dateRange = toTaskDateRange(external);
+  const subitemBoardId = external.board?.id;
+  const cols = subitemBoardId
+    ? await ensureBoardColumns(context, getOrCreateClient(context), subitemBoardId)
+    : {};
+  const dateRange = toTaskDateRange(external, cols);
   if (!dateRange) {
     return false;
   }
@@ -582,7 +716,11 @@ async function syncInboundTodoFromItem(
   });
 
   const name = external.name?.trim() || external.id;
-  const dueDate = extractDueDate(external);
+  const itemBoardId = external.board?.id;
+  const cols = itemBoardId
+    ? await ensureBoardColumns(context, getOrCreateClient(context), itemBoardId)
+    : {};
+  const dueDate = extractDueDate(external, cols);
   const status = mapMondayStatusToLocal(external.column_values);
 
   if (!todoMapping?.localId) {
@@ -755,18 +893,40 @@ function resolveTodoId(input: SyncInput): string | undefined {
   return input?.todoId || input?.item?.todoId || input?.item?.id;
 }
 
-function buildItemName(task: TaskDto): string {
+function buildItemName(task: TaskDto, template?: string): string {
   const description = task.description?.trim();
   if (description) {
     return description.length > 255 ? `${description.slice(0, 252)}...` : description;
   }
-  if (task.project?.title) {
-    return `Timesheet entry — ${task.project.title}`;
-  }
-  return `Timesheet entry ${task.id}`;
+  const rendered = renderNameTemplate(template || DEFAULT_ITEM_NAME_TEMPLATE, task).trim();
+  const final = rendered || `Timesheet entry ${task.id}`;
+  return final.length > 255 ? `${final.slice(0, 252)}...` : final;
 }
 
-function buildMondayColumnValues(task: TaskDto, externalUserId?: string): Record<string, unknown> {
+function renderNameTemplate(template: string, task: TaskDto): string {
+  const start = parseDate(task.startDateTime);
+  const end = parseDate(task.endDateTime);
+  const replacements: Record<string, string> = {
+    description: task.description?.trim() ?? '',
+    projectTitle: task.project?.title ?? '',
+    taskId: task.id ?? '',
+    startDate: start ? toIsoDate(start) : '',
+    startTime: start ? toIsoTime(start).slice(0, 5) : '',
+    endDate: end ? toIsoDate(end) : '',
+    endTime: end ? toIsoTime(end).slice(0, 5) : '',
+    startDateTime: start ? `${toIsoDate(start)} ${toIsoTime(start).slice(0, 5)}` : '',
+    endDateTime: end ? `${toIsoDate(end)} ${toIsoTime(end).slice(0, 5)}` : ''
+  };
+  return template.replace(/\{(\w+)\}/g, (match, key: string) => {
+    return key in replacements ? replacements[key] : match;
+  });
+}
+
+function buildMondayColumnValues(
+  task: TaskDto,
+  externalUserId: string | undefined,
+  cols: MondayBoardColumns
+): Record<string, unknown> {
   const start = parseDate(task.startDateTime);
   const end = parseDate(task.endDateTime);
 
@@ -774,20 +934,19 @@ function buildMondayColumnValues(task: TaskDto, externalUserId?: string): Record
     throw new Error(`Task ${task.id} is missing start or end datetime.`);
   }
 
-  const values: Record<string, unknown> = {
-    [DATE_START_COLUMN_ID]: formatMondayDate(start),
-    [DATE_DUE_COLUMN_ID]: formatMondayDate(end),
-    [TIMELINE_COLUMN_ID]: {
-      from: toIsoDate(start),
-      to: toIsoDate(end)
-    }
-  };
+  const values: Record<string, unknown> = {};
+  if (cols.dateStartId) {
+    values[cols.dateStartId] = formatMondayDate(start);
+  }
+  if (cols.dateEndId) {
+    values[cols.dateEndId] = formatMondayDate(end);
+  }
 
-  if (externalUserId) {
+  if (externalUserId && cols.personId) {
     // Person column accepts a list of `{ id, kind }` entries. Numeric ids are
     // expected, but stringified ids are tolerated by the API.
     const numericId = Number(externalUserId);
-    values[PERSON_COLUMN_ID] = {
+    values[cols.personId] = {
       personsAndTeams: [
         {
           id: Number.isFinite(numericId) ? numericId : externalUserId,
@@ -800,13 +959,69 @@ function buildMondayColumnValues(task: TaskDto, externalUserId?: string): Record
   return values;
 }
 
-function buildTodoColumnValues(todo: ToDoDto): Record<string, unknown> {
+function buildColumnValuesOrSkip(
+  task: TaskDto,
+  externalUserId: string | undefined,
+  cols: MondayBoardColumns,
+  context: IntegrationContext<MondayConfig>
+): Record<string, unknown> | null {
+  try {
+    return buildMondayColumnValues(task, externalUserId, cols);
+  } catch (err) {
+    context.logger.warn('Failed to build monday.com item payload', { taskId: task.id, error: String(err) });
+    return null;
+  }
+}
+
+// New subitems land on monday's sibling "subitems board", whose id is only
+// known after creation. Create the subitem first with just a name, then
+// discover the subitems board's columns and update the date/person values.
+async function createSubitemWithColumns(
+  client: MondayClient,
+  context: IntegrationContext<MondayConfig>,
+  parentItemId: string,
+  name: string,
+  task: TaskDto,
+  externalUserId: string | undefined
+): Promise<MondayItem> {
+  const created = await client.createSubitem(parentItemId, name, {});
+  const subitemBoardId = created.board?.id;
+  if (!subitemBoardId) {
+    return created;
+  }
+  const cols = await ensureBoardColumns(context, client, subitemBoardId);
+  const columnValues = buildColumnValuesOrSkip(task, externalUserId, cols, context);
+  if (!columnValues || Object.keys(columnValues).length === 0) {
+    return created;
+  }
+  try {
+    return await client.updateItem(created.id, subitemBoardId, name, columnValues);
+  } catch (err) {
+    context.logger.warn('Failed to set subitem column values after create', { itemId: created.id, error: String(err) });
+    return created;
+  }
+}
+
+async function createItemWithColumns(
+  client: MondayClient,
+  context: IntegrationContext<MondayConfig>,
+  boardId: string,
+  name: string,
+  task: TaskDto,
+  externalUserId: string | undefined
+): Promise<MondayItem> {
+  const cols = await ensureBoardColumns(context, client, boardId);
+  const columnValues = buildColumnValuesOrSkip(task, externalUserId, cols, context);
+  return client.createItem(boardId, name, columnValues ?? {});
+}
+
+function buildTodoColumnValues(todo: ToDoDto, cols: MondayBoardColumns): Record<string, unknown> {
   const values: Record<string, unknown> = {};
 
-  if (todo.dueDate) {
+  if (todo.dueDate && cols.dateEndId) {
     const due = parseDate(todo.dueDate);
     if (due) {
-      values[DATE_DUE_COLUMN_ID] = formatMondayDate(due);
+      values[cols.dateEndId] = formatMondayDate(due);
     }
   }
 
@@ -820,8 +1035,11 @@ function buildTodoColumnValues(todo: ToDoDto): Record<string, unknown> {
   return values;
 }
 
-function extractDueDate(external: MondayItem): string | undefined {
-  const due = pickDateColumn(external.column_values, DATE_DUE_COLUMN_ID);
+function extractDueDate(external: MondayItem, cols: MondayBoardColumns): string | undefined {
+  if (!cols.dateEndId) {
+    return undefined;
+  }
+  const due = pickDateColumn(external.column_values, cols.dateEndId);
   return due ? new Date(due).toISOString() : undefined;
 }
 
@@ -851,8 +1069,8 @@ function toIsoTime(date: Date): string {
   return date.toISOString().slice(11, 19);
 }
 
-function toTaskDateRange(external: MondayItem): { startDateTime: string; endDateTime: string } | null {
-  const range = extractDateRange(external);
+function toTaskDateRange(external: MondayItem, cols: MondayBoardColumns): { startDateTime: string; endDateTime: string } | null {
+  const range = extractDateRange(external, cols);
   if (!range) {
     return null;
   }
@@ -862,25 +1080,76 @@ function toTaskDateRange(external: MondayItem): { startDateTime: string; endDate
   };
 }
 
-function extractDateRange(external: MondayItem): { startMs: number; endMs: number } | null {
+function extractDateRange(external: MondayItem, cols: MondayBoardColumns): { startMs: number; endMs: number } | null {
   const columns = external.column_values ?? [];
-  const start = pickDateColumn(columns, DATE_START_COLUMN_ID);
-  const end = pickDateColumn(columns, DATE_DUE_COLUMN_ID);
+  if (!cols.dateStartId || !cols.dateEndId) {
+    return null;
+  }
+  const start = pickDateColumn(columns, cols.dateStartId);
+  const end = pickDateColumn(columns, cols.dateEndId);
   if (start && end && end > start) {
     return { startMs: start, endMs: end };
   }
-  const timeline = pickTimelineColumn(columns, TIMELINE_COLUMN_ID);
-  if (timeline && timeline.endMs > timeline.startMs) {
-    return timeline;
-  }
   return null;
+}
+
+async function ensureBoardColumns(
+  context: IntegrationContext<MondayConfig>,
+  client: MondayClient,
+  boardId: string
+): Promise<MondayBoardColumns> {
+  const cacheKey = boardColumnsCacheKey(boardId);
+  const cached = await context.state.get<MondayBoardColumns>(cacheKey);
+  if (cached && cached.dateStartId && cached.dateEndId) {
+    return cached;
+  }
+
+  let columns;
+  try {
+    columns = await client.listBoardColumns(boardId);
+  } catch (err) {
+    context.logger.warn('Failed to list board columns', { boardId, error: String(err) });
+    return cached ?? {};
+  }
+
+  const dateColumns = columns.filter((c) => c.type === 'date');
+  const peopleColumns = columns.filter((c) => c.type === 'people' || c.type === 'multiple-person');
+
+  const byTitle = (title: string) => dateColumns.find((c) => (c.title ?? '').trim().toLowerCase() === title.toLowerCase());
+
+  let startCol = byTitle(TIMESHEET_START_COLUMN_TITLE);
+  let endCol = byTitle(TIMESHEET_END_COLUMN_TITLE);
+
+  if (!startCol) {
+    try {
+      startCol = await client.createColumn(boardId, TIMESHEET_START_COLUMN_TITLE, 'date');
+    } catch (err) {
+      context.logger.warn('Failed to create Timesheet Start column', { boardId, error: String(err) });
+    }
+  }
+  if (!endCol) {
+    try {
+      endCol = await client.createColumn(boardId, TIMESHEET_END_COLUMN_TITLE, 'date');
+    } catch (err) {
+      context.logger.warn('Failed to create Timesheet End column', { boardId, error: String(err) });
+    }
+  }
+
+  const result: MondayBoardColumns = {
+    dateStartId: startCol?.id,
+    dateEndId: endCol?.id,
+    personId: peopleColumns[0]?.id
+  };
+
+  if (result.dateStartId && result.dateEndId) {
+    await context.state.set(cacheKey, result);
+  }
+  return result;
 }
 
 interface RawColumnValue {
   date?: string;
   time?: string | null;
-  from?: string;
-  to?: string;
 }
 
 function pickDateColumn(columns: MondayItem['column_values'], id: string): number | null {
@@ -900,28 +1169,6 @@ function pickDateColumn(columns: MondayItem['column_values'], id: string): numbe
   const iso = parsed.time ? `${parsed.date}T${parsed.time}Z` : `${parsed.date}T00:00:00Z`;
   const ms = Date.parse(iso);
   return Number.isNaN(ms) ? null : ms;
-}
-
-function pickTimelineColumn(columns: MondayItem['column_values'], id: string): { startMs: number; endMs: number } | null {
-  const column = columns?.find((c) => c.id === id);
-  if (!column?.value) {
-    return null;
-  }
-  let parsed: RawColumnValue;
-  try {
-    parsed = JSON.parse(column.value) as RawColumnValue;
-  } catch {
-    return null;
-  }
-  if (!parsed?.from || !parsed?.to) {
-    return null;
-  }
-  const startMs = Date.parse(`${parsed.from}T00:00:00Z`);
-  const endMs = Date.parse(`${parsed.to}T23:59:59Z`);
-  if (Number.isNaN(startMs) || Number.isNaN(endMs)) {
-    return null;
-  }
-  return { startMs, endMs };
 }
 
 function parseDate(value: string | undefined): Date | null {

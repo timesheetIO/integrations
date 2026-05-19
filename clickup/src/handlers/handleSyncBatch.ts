@@ -1,6 +1,7 @@
 import { defineHandler, MappingRecord, SyncModeInput } from '@timesheet/integration-sdk';
 import { ClickUpConfig, SyncInput } from '../lib/types';
 import { ClickUpSyncResult, syncTaskToClickUp, syncTodoToClickUp } from '../lib/taskSync';
+import { ClickUpApiError, isClickUpPlanLimitError } from '../lib/clickupClient';
 
 const SYSTEM = 'clickup';
 const PROJECT_ENTITY = 'project';
@@ -81,6 +82,18 @@ export const handleSyncBatch = defineHandler<SyncModeInput, ClickUpSyncResult, C
           });
         }
       } catch (err) {
+        if (isClickUpPlanLimitError(err)) {
+          const friendly = formatPlanLimitMessage(err);
+          context.logger.warn('ClickUp plan limit reached — change not synced', {
+            entityType: change.entityType,
+            entityId: change.entityId,
+            op: change.op,
+            ecode: err.ecode,
+            apiMessage: err.apiMessage
+          });
+          errors.push({ entityType: change.entityType, entityId: change.entityId, error: friendly });
+          continue;
+        }
         context.logger.error('Failed to sync change', {
           entityType: change.entityType,
           entityId: change.entityId,
@@ -105,3 +118,9 @@ export const handleSyncBatch = defineHandler<SyncModeInput, ClickUpSyncResult, C
     };
   }
 );
+
+function formatPlanLimitMessage(err: ClickUpApiError): string {
+  const detail = err.apiMessage ?? 'A ClickUp plan limit has been reached on this workspace.';
+  const code = err.ecode ?? 'unknown';
+  return `ClickUp plan limit reached: ${detail} Upgrade the ClickUp workspace to continue syncing (ClickUp error ${code}).`;
+}

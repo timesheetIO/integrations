@@ -17,6 +17,53 @@ interface ClickUpClientOptions {
   refreshAccessToken: () => Promise<string>;
 }
 
+export class ClickUpApiError extends Error {
+  readonly status: number;
+  readonly ecode: string | null;
+  readonly apiMessage: string | null;
+  readonly body: string;
+
+  constructor(method: string, path: string, status: number, body: string) {
+    // Keep the message format identical to what was previously thrown so
+    // callers that grep error strings (e.g. `String(err).includes('(404)')`)
+    // continue to work.
+    super(`ClickUp API ${method} ${path} failed (${status}): ${body}`);
+    this.name = 'ClickUpApiError';
+    this.status = status;
+    this.body = body;
+    const parsed = parseClickUpErrorBody(body);
+    this.ecode = parsed.ecode;
+    this.apiMessage = parsed.message;
+  }
+}
+
+// Known ClickUp ECODEs that mean the workspace plan blocks the operation —
+// retrying is pointless until the user upgrades. Extend as we encounter more.
+const PLAN_LIMIT_ECODES: ReadonlySet<string> = new Set([
+  'TIMEENTRY_064' // "Your plan is limited to N usages of Advanced Time Tracking"
+]);
+
+export function isClickUpPlanLimitError(error: unknown): error is ClickUpApiError {
+  return (
+    error instanceof ClickUpApiError
+    && error.status === 403
+    && error.ecode !== null
+    && PLAN_LIMIT_ECODES.has(error.ecode)
+  );
+}
+
+function parseClickUpErrorBody(body: string): { ecode: string | null; message: string | null } {
+  try {
+    const parsed = JSON.parse(body) as { ECODE?: unknown; err?: unknown };
+    return {
+      ecode: typeof parsed.ECODE === 'string' ? parsed.ECODE : null,
+      message: typeof parsed.err === 'string' ? parsed.err : null
+    };
+  } catch {
+    return { ecode: null, message: null };
+  }
+}
+
 export class ClickUpClient {
   private static readonly BASE_URL = 'https://api.clickup.com/api/v2';
   private static readonly REQUEST_TIMEOUT_MS = 30_000;
@@ -357,7 +404,7 @@ export class ClickUpClient {
 
     if (!response.ok) {
       const errorBody = await response.text();
-      throw new Error(`ClickUp API ${method} ${path} failed (${response.status}): ${errorBody}`);
+      throw new ClickUpApiError(method, path, response.status, errorBody);
     }
 
     if (response.status === 204) {

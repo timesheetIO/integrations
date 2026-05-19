@@ -2,6 +2,7 @@ import { ExternalEntity } from '@timesheet/integration-sdk';
 import {
   MondayBoard,
   MondayBoardItemsResponse,
+  MondayColumn,
   MondayItem,
   MondayNextItemsResponse,
   MondayUser
@@ -219,6 +220,39 @@ export class MondayClient {
     );
     const item = data?.items?.[0];
     return item ?? null;
+  }
+
+  async listBoardColumns(boardId: string): Promise<MondayColumn[]> {
+    const data = await this.graphql<{ boards?: Array<{ columns?: MondayColumn[] }> }>(
+      `query ($boardIds: [ID!]) {
+        boards(ids: $boardIds) {
+          columns { id title type }
+        }
+      }`,
+      { boardIds: [boardId] }
+    );
+    return data?.boards?.[0]?.columns ?? [];
+  }
+
+  async createColumn(
+    boardId: string,
+    title: string,
+    columnType: 'date' | 'people' | 'timeline' | 'text' | 'status'
+  ): Promise<MondayColumn> {
+    const data = await this.graphql<{ create_column?: MondayColumn }>(
+      `mutation ($boardId: ID!, $title: String!, $columnType: ColumnType!) {
+        create_column(board_id: $boardId, title: $title, column_type: $columnType) {
+          id
+          title
+          type
+        }
+      }`,
+      { boardId, title, columnType }
+    );
+    if (!data?.create_column) {
+      throw new Error(`monday.com create_column returned no column (board ${boardId}, title ${title})`);
+    }
+    return data.create_column;
   }
 
   async createItem(

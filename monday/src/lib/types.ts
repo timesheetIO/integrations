@@ -3,6 +3,19 @@ import { TaskDto } from '@timesheet/integration-sdk';
 export interface MondayConfig {
   syncDirection?: 'bidirectional' | 'timesheet-to-monday' | 'monday-to-timesheet' | 'timesheet-to-external' | 'external-to-timesheet';
   webhookSecret?: string;
+  itemNameTemplate?: string;
+}
+
+export interface MondayColumn {
+  id: string;
+  title?: string;
+  type?: string;
+}
+
+export interface MondayBoardColumns {
+  dateStartId?: string;
+  dateEndId?: string;
+  personId?: string;
 }
 
 export interface MondayWorkspace {
