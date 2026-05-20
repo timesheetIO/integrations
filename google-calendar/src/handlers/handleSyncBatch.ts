@@ -34,7 +34,12 @@ export const handleSyncBatch = defineHandler<SyncModeInput, GoogleCalendarSyncRe
       try {
         const project = await context.data.getProject(projectId);
         projectById.set(projectId, project);
-      } catch { /* project may have been deleted */ }
+      } catch (err) {
+        context.logger.warn('Failed to pre-load project for event enrichment', {
+          projectId,
+          error: String(err)
+        });
+      }
     });
     await Promise.all(projectFetches);
 

@@ -474,9 +474,11 @@ function buildGoogleEventPayload(task: TaskDto): Record<string, unknown> {
     throw new Error(`Task ${task.id} is missing start or end datetime.`);
   }
 
-  const summary = task.project?.title
+  const projectSummary = task.project?.title
     ? [task.project.title, task.project.employer].filter(Boolean).join(' - ')
-    : (task.description ?? 'Timesheet task');
+    : '';
+  const description = typeof task.description === 'string' ? task.description.trim() : '';
+  const summary = projectSummary || description || 'Timesheet task';
 
   const creatorEmail = task.member?.email;
   const creatorDisplayName = task.member?.displayName;
@@ -562,6 +564,21 @@ async function loadTask(
       let project: ProjectDto | Record<string, unknown> | undefined;
       if (caches?.projectById) {
         project = caches.projectById.get(projectId);
+      }
+      // Cache miss — a transient pre-load failure shouldn't translate into an
+      // empty calendar entry title. Try to fetch the project on demand.
+      if (!project) {
+        try {
+          project = await context.data.getProject(projectId);
+          if (project) {
+            caches?.projectById?.set(projectId, project as ProjectDto);
+          }
+        } catch (err) {
+          context.logger.warn('Failed to load project for event enrichment', {
+            projectId,
+            error: String(err)
+          });
+        }
       }
       raw.project = project ?? { id: projectId };
     }
