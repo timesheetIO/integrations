@@ -1,6 +1,6 @@
 {
   "name": "@timesheet/plugin-outlook-calendar",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
@@ -13,6 +13,6 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@timesheet/integration-sdk": "^0.1.0"
+    "@timesheet/integration-sdk": "^0.4.0"
   }
 }

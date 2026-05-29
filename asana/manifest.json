@@ -177,17 +177,17 @@
       "widgets": [
         {
           "id": "last-sync",
-          "type": "sync_summary",
+          "type": "metric",
           "title": "Last Sync"
         },
         {
           "id": "sync-stats",
-          "type": "sync_stats",
+          "type": "metric",
           "title": "Sync Statistics"
         },
         {
           "id": "connection-health",
-          "type": "connection_health",
+          "type": "metric",
           "title": "Connection Health"
         },
         {

@@ -39,7 +39,6 @@
         "type": "string",
         "title": "Webhook Verifier Token",
         "x-ui-widget": "password",
-        "x-ui-secret": true,
         "x-ui-help": "Verifier Token from your Intuit Developer Dashboard (Webhooks settings). Required to authenticate inbound webhooks; without it, webhooks are rejected."
       }
     },
@@ -186,17 +185,17 @@
       "widgets": [
         {
           "id": "last-sync",
-          "type": "sync_summary",
+          "type": "metric",
           "title": "Last Sync"
         },
         {
           "id": "sync-stats",
-          "type": "sync_stats",
+          "type": "metric",
           "title": "Sync Statistics"
         },
         {
           "id": "connection-health",
-          "type": "connection_health",
+          "type": "metric",
           "title": "Connection Health"
         },
         {

@@ -33,7 +33,6 @@
         "type": "string",
         "title": "Webhook Secret",
         "x-ui-widget": "password",
-        "x-ui-secret": true,
         "x-ui-help": "Shared secret returned by ClickUp when registering the webhook. Required to verify inbound webhooks."
       }
     },
@@ -199,17 +198,17 @@
       "widgets": [
         {
           "id": "last-sync",
-          "type": "sync_summary",
+          "type": "metric",
           "title": "Last Sync"
         },
         {
           "id": "sync-stats",
-          "type": "sync_stats",
+          "type": "metric",
           "title": "Sync Statistics"
         },
         {
           "id": "connection-health",
-          "type": "connection_health",
+          "type": "metric",
           "title": "Connection Health"
         },
         {
