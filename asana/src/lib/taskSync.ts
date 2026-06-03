@@ -1,4 +1,3 @@
-import * as crypto from 'crypto';
 import {
   IntegrationContext,
   MappingRecord,
@@ -339,7 +338,7 @@ export async function handleAsanaWebhook(
     if (!signature || !rawBody) {
       return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason: 'missing-signature-or-body' } };
     }
-    if (!verifyAsanaSignature(rawBody, signature, storedSecret)) {
+    if (!(await verifyAsanaSignature(rawBody, signature, storedSecret))) {
       context.logger.warn('Asana webhook rejected: signature mismatch');
       return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason: 'invalid-signature' } };
     }
@@ -865,14 +864,43 @@ function parseWebhookPayload(body: unknown, rawBody: string | undefined): AsanaW
   return null;
 }
 
-function verifyAsanaSignature(rawBody: string, signatureHeader: string, secret: string): boolean {
-  const hmac = crypto.createHmac('sha256', secret);
-  hmac.update(rawBody, 'utf8');
-  const expected = hmac.digest('hex');
-  const expectedBuffer = Buffer.from(expected);
-  const actualBuffer = Buffer.from(signatureHeader);
-  if (expectedBuffer.length !== actualBuffer.length) return false;
-  return crypto.timingSafeEqual(expectedBuffer, actualBuffer);
+// Web Crypto is used so this plugin works in sandboxed runtimes (esbuild bundler
+// without Node built-ins). Both Node 18+ and the plugin runtime expose
+// `globalThis.crypto.subtle`.
+async function verifyAsanaSignature(rawBody: string, signatureHeader: string, secret: string): Promise<boolean> {
+  // Asana signs the raw request body with HMAC-SHA256 keyed on the webhook
+  // secret, and sends the digest as lowercase hex in `x-hook-signature`.
+  const encoder = new TextEncoder();
+  const key = await globalThis.crypto.subtle.importKey(
+    'raw',
+    encoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const signatureBuffer = await globalThis.crypto.subtle.sign('HMAC', key, encoder.encode(rawBody));
+  const expected = bufferToHex(signatureBuffer);
+  return constantTimeEquals(expected, signatureHeader);
+}
+
+function bufferToHex(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let hex = '';
+  for (let i = 0; i < bytes.length; i++) {
+    hex += bytes[i].toString(16).padStart(2, '0');
+  }
+  return hex;
+}
+
+function constantTimeEquals(a: string, b: string): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  let result = 0;
+  for (let i = 0; i < a.length; i++) {
+    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return result === 0;
 }
 
 function readMetadataString(metadata: Record<string, unknown>, key: string): string | undefined {

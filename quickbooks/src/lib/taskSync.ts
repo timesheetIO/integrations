@@ -1,4 +1,3 @@
-import * as crypto from 'crypto';
 import {
   IntegrationContext,
   MappingRecord,
@@ -257,7 +256,7 @@ export async function handleQuickBooksWebhook(
     return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason: 'missing-body' } };
   }
 
-  if (!verifyIntuitSignature(rawBody, signature, verifierToken)) {
+  if (!(await verifyIntuitSignature(rawBody, signature, verifierToken))) {
     context.logger.warn('QuickBooks webhook rejected: signature mismatch');
     return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason: 'invalid-signature' } };
   }
@@ -750,14 +749,44 @@ function parseWebhookPayload(body: unknown, rawBody: string): QuickBooksWebhookP
   return null;
 }
 
-function verifyIntuitSignature(rawBody: string, signatureHeader: string, verifierToken: string): boolean {
-  const hmac = crypto.createHmac('sha256', verifierToken);
-  hmac.update(rawBody, 'utf8');
-  const expected = hmac.digest('base64');
-  const expectedBuffer = Buffer.from(expected);
-  const actualBuffer = Buffer.from(signatureHeader);
-  if (expectedBuffer.length !== actualBuffer.length) {
+// Web Crypto is used so this plugin works in sandboxed runtimes (esbuild bundler
+// without Node built-ins). Both Node 18+ and the plugin runtime expose
+// `globalThis.crypto.subtle`.
+async function verifyIntuitSignature(rawBody: string, signatureHeader: string, verifierToken: string): Promise<boolean> {
+  // Intuit signs the raw request body with HMAC-SHA256 keyed on the webhook
+  // verifier token, and sends the digest as standard base64 in `intuit-signature`.
+  const encoder = new TextEncoder();
+  const key = await globalThis.crypto.subtle.importKey(
+    'raw',
+    encoder.encode(verifierToken),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const signatureBuffer = await globalThis.crypto.subtle.sign('HMAC', key, encoder.encode(rawBody));
+  const expected = bufferToBase64(signatureBuffer);
+  return constantTimeEquals(expected, signatureHeader);
+}
+
+function bufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return typeof btoa === 'function'
+    ? btoa(binary)
+    // Fallback for environments where btoa isn't a global (older Node test runs).
+    : Buffer.from(binary, 'binary').toString('base64');
+}
+
+function constantTimeEquals(a: string, b: string): boolean {
+  if (a.length !== b.length) {
     return false;
   }
-  return crypto.timingSafeEqual(expectedBuffer, actualBuffer);
+  let result = 0;
+  for (let i = 0; i < a.length; i++) {
+    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return result === 0;
 }
