@@ -92,4 +92,6 @@ export interface SyncInput {
   query?: Record<string, string>;
   body?: unknown;
   rawBody?: string;
+  /** Set by the backend on app-level webhooks it has already verified and routed by realm. */
+  verified?: boolean;
 }

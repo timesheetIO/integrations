@@ -240,29 +240,41 @@ export async function handleQuickBooksWebhook(
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'sync-direction-mismatch' } };
   }
 
-  const verifierToken = context.config?.webhookVerifierToken;
-  if (!verifierToken) {
-    context.logger.warn('QuickBooks webhook rejected: webhookVerifierToken not configured');
-    return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason: 'verifier-not-configured' } };
-  }
-
-  const signature = getHeader(input, 'intuit-signature');
-  if (!signature) {
-    return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason: 'missing-signature' } };
-  }
-
+  // App-level webhooks are verified and routed to the owning installation by the backend, which
+  // holds the raw request body and the app verifier token. When that has happened we trust it and
+  // process only the resolved realm. Otherwise fall back to verifying in-plugin (legacy path).
+  const backendVerified = input?.verified === true;
   const rawBody = getRawBody(input);
-  if (!rawBody) {
-    return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason: 'missing-body' } };
+
+  if (!backendVerified) {
+    const verifierToken = context.config?.webhookVerifierToken;
+    if (!verifierToken) {
+      context.logger.warn('QuickBooks webhook rejected: webhookVerifierToken not configured');
+      return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason: 'verifier-not-configured' } };
+    }
+
+    const signature = getHeader(input, 'intuit-signature');
+    if (!signature) {
+      return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason: 'missing-signature' } };
+    }
+
+    if (!rawBody) {
+      return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason: 'missing-body' } };
+    }
+
+    if (!(await verifyIntuitSignature(rawBody, signature, verifierToken))) {
+      context.logger.warn('QuickBooks webhook rejected: signature mismatch');
+      return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason: 'invalid-signature' } };
+    }
   }
 
-  if (!(await verifyIntuitSignature(rawBody, signature, verifierToken))) {
-    context.logger.warn('QuickBooks webhook rejected: signature mismatch');
-    return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason: 'invalid-signature' } };
-  }
+  const payload = parseWebhookPayload(input.body, rawBody ?? '');
+  let changes = collectChangesFromPayload(payload);
 
-  const payload = parseWebhookPayload(input.body, rawBody);
-  const changes = collectChangesFromPayload(payload);
+  // The backend dispatches one execution per realm, so ignore any other realm sharing the payload.
+  if (backendVerified && input?.realmId) {
+    changes = changes.filter((change) => change.realmId === input.realmId);
+  }
 
   return processInboundChanges(changes, context);
 }
