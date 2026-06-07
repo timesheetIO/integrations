@@ -182,10 +182,14 @@ describe('quickbooks plugin', () => {
 
     (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock as typeof fetch;
 
+    // App-level webhooks arrive already verified and routed to one realm by the backend.
     const result = await handleWebhook({
+      verified: true,
+      realmId: 'realm-1',
       body: {
         eventNotifications: [
           {
+            realmId: 'realm-1',
             dataChangeEvent: {
               entities: [{ name: 'TimeActivity', id: 'ta-1' }]
             }
