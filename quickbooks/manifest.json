@@ -1,7 +1,7 @@
 {
   "id": "quickbooks-sync",
   "name": "QuickBooks Time Sync",
-  "version": "1.3.0",
+  "version": "1.4.4",
   "description": "Synchronize tasks with QuickBooks Online",
   "longDescription": "Bidirectional synchronization between Timesheet tasks and QuickBooks TimeActivity entries.",
   "icon": "quickbooks",
@@ -28,12 +28,6 @@
         "enum": ["bidirectional", "timesheet-to-qb", "qb-to-timesheet"],
         "default": "bidirectional",
         "x-ui-widget": "radio"
-      },
-      "sandboxMode": {
-        "type": "boolean",
-        "title": "Use QuickBooks Sandbox",
-        "default": false,
-        "x-ui-help": "Enable for testing against a QuickBooks sandbox company."
       }
     },
     "required": ["syncDirection"]
@@ -97,7 +91,7 @@
       "configurable": false,
       "actionId": "handle-webhook",
       "webhook": {
-        "accountIdentifierPath": "eventNotifications[].realmId",
+        "accountIdentifierPath": "[].intuitaccountid",
         "signature": {
           "header": "intuit-signature",
           "algorithm": "hmac-sha256",

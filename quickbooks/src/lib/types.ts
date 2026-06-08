@@ -2,7 +2,6 @@ import { TaskDto } from '@timesheet/integration-sdk';
 
 export interface QuickBooksConfig {
   syncDirection?: 'bidirectional' | 'timesheet-to-qb' | 'qb-to-timesheet' | 'timesheet-to-external' | 'external-to-timesheet';
-  sandboxMode?: boolean;
   webhookVerifierToken?: string;
 }
 
@@ -63,22 +62,22 @@ export interface QuickBooksCreateOrUpdateResponse {
   TimeActivity?: QuickBooksTimeActivity;
 }
 
-export interface QuickBooksWebhookEntity {
-  name?: string;
+// Intuit webhooks use the CloudEvents format: the payload is a top-level array of
+// events, one per changed entity. `type` is "qbo.<entity>.<action>.v1"
+// (e.g. "qbo.timeactivity.updated.v1"), `intuitaccountid` carries the realmId and
+// `intuitentityid` the entity id.
+export interface QuickBooksCloudEvent {
+  specversion?: string;
   id?: string;
-  operation?: string;
+  source?: string;
+  type?: string;
+  time?: string;
+  intuitentityid?: string;
+  intuitaccountid?: string;
+  data?: unknown;
 }
 
-export interface QuickBooksWebhookNotification {
-  realmId?: string;
-  dataChangeEvent?: {
-    entities?: QuickBooksWebhookEntity[];
-  };
-}
-
-export interface QuickBooksWebhookPayload {
-  eventNotifications?: QuickBooksWebhookNotification[];
-}
+export type QuickBooksWebhookPayload = QuickBooksCloudEvent[];
 
 export interface SyncInput {
   event?: string;

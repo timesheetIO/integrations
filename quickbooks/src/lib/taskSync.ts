@@ -7,9 +7,9 @@ import {
 } from '@timesheet/integration-sdk';
 import { QuickBooksClient } from './quickbooksClient';
 import {
+  QuickBooksCloudEvent,
   QuickBooksConfig,
   QuickBooksTimeActivity,
-  QuickBooksWebhookEntity,
   QuickBooksWebhookPayload,
   SyncInput
 } from './types';
@@ -368,25 +368,22 @@ async function processInboundChanges(
   };
 }
 
-function collectChangesFromPayload(payload: QuickBooksWebhookPayload | null): EntityChange[] {
+function collectChangesFromPayload(events: QuickBooksWebhookPayload | null): EntityChange[] {
   const changes: EntityChange[] = [];
-  for (const notification of payload?.eventNotifications ?? []) {
-    const realmId = notification?.realmId;
-    if (!realmId) {
-      continue;
-    }
-    for (const entity of notification?.dataChangeEvent?.entities ?? []) {
-      if (!isTimeActivityChange(entity)) {
-        continue;
-      }
-      changes.push({
-        id: entity.id as string,
-        operation: (entity.operation ?? 'Update').toLowerCase(),
-        realmId
-      });
+  for (const event of events ?? []) {
+    const change = parseTimeActivityEvent(event);
+    if (change) {
+      changes.push(change);
     }
   }
   return changes;
+}
+
+// The plugin runtime injects the deployment environment as `context.environment`.
+// 'sandbox' selects the QuickBooks sandbox API host; production runtimes default
+// to the production host.
+function isSandboxEnvironment(context: IntegrationContext<QuickBooksConfig>): boolean {
+  return context.environment === 'sandbox';
 }
 
 export async function createQuickBooksClient(
@@ -403,7 +400,7 @@ export async function createQuickBooksClient(
   }
   return new QuickBooksClient({
     realmId,
-    sandboxMode: context.config?.sandboxMode === true,
+    sandbox: isSandboxEnvironment(context),
     getAccessToken: () => context.credentials.getAccessToken(SYSTEM),
     refreshAccessToken: () => context.credentials.refreshToken(SYSTEM)
   });
@@ -632,14 +629,22 @@ function buildTimeActivityPayload(
   };
 }
 
+// The Timesheet API datetime format is `yyyy-MM-dd'T'HH:mm:ssxxx`
+// (e.g. 2021-03-19T18:00:00+00:00). Date.toISOString() emits milliseconds and a
+// trailing 'Z', which the API rejects and then mis-repairs (it pads the hour to
+// three digits). Emit seconds precision with an explicit +00:00 offset instead.
+function toApiDateTime(date: Date): string {
+  return `${date.toISOString().slice(0, 19)}+00:00`;
+}
+
 function buildTaskDateRange(activity: QuickBooksTimeActivity): { startDateTime: string; endDateTime: string } | null {
   const start = parseDate(activity.StartTime);
   const end = parseDate(activity.EndTime);
 
   if (start && end) {
     return {
-      startDateTime: start.toISOString(),
-      endDateTime: end.toISOString()
+      startDateTime: toApiDateTime(start),
+      endDateTime: toApiDateTime(end)
     };
   }
 
@@ -654,8 +659,8 @@ function buildTaskDateRange(activity: QuickBooksTimeActivity): { startDateTime: 
     const computedEnd = new Date(day.getTime() + ((hours * 60) + minutes) * 60_000);
 
     return {
-      startDateTime: day.toISOString(),
-      endDateTime: computedEnd.toISOString()
+      startDateTime: toApiDateTime(day),
+      endDateTime: toApiDateTime(computedEnd)
     };
   }
 
@@ -696,18 +701,28 @@ function getExternalUpdatedAt(activity: QuickBooksTimeActivity): number {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-function isTimeActivityChange(entity: QuickBooksWebhookEntity | undefined): boolean {
-  if (!entity?.id || !entity?.name) {
-    return false;
+function parseTimeActivityEvent(event: QuickBooksCloudEvent | undefined): EntityChange | null {
+  const realmId = event?.intuitaccountid;
+  const id = event?.intuitentityid;
+  const type = event?.type;
+  if (!realmId || !id || !type) {
+    return null;
   }
-  return entity.name.toLowerCase() === 'timeactivity';
+  // CloudEvents type format: "qbo.<entity>.<action>.v1", e.g. "qbo.timeactivity.updated.v1".
+  const segments = type.toLowerCase().split('.');
+  const entity = segments[1];
+  const action = segments[2];
+  if (entity !== 'timeactivity' || !action) {
+    return null;
+  }
+  return { id, operation: action, realmId };
 }
 
 function isDeleteOperation(operation: string): boolean {
-  // Intuit emits Create/Update/Delete/Merge/Void; treat Delete and Void as
-  // hard removals; Merge is rare on TimeActivity but the merged-from entity
-  // becomes inaccessible, so we drop it locally as well.
-  return operation === 'delete' || operation === 'void' || operation === 'merge';
+  // CloudEvents actions are past tense; treat deleted and voided as hard removals.
+  // Merge is rare on TimeActivity but the merged-from entity becomes inaccessible,
+  // so we drop it locally as well.
+  return operation === 'deleted' || operation === 'voided' || operation === 'merged';
 }
 
 function getHeader(input: SyncInput, name: string): string | undefined {
@@ -748,12 +763,13 @@ function getRawBody(input: SyncInput): string | undefined {
 }
 
 function parseWebhookPayload(body: unknown, rawBody: string): QuickBooksWebhookPayload | null {
-  if (body && typeof body === 'object') {
+  if (Array.isArray(body)) {
     return body as QuickBooksWebhookPayload;
   }
   if (rawBody) {
     try {
-      return JSON.parse(rawBody) as QuickBooksWebhookPayload;
+      const parsed = JSON.parse(rawBody);
+      return Array.isArray(parsed) ? (parsed as QuickBooksWebhookPayload) : null;
     } catch {
       return null;
     }

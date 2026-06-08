@@ -52,7 +52,7 @@ describe('quickbooks plugin', () => {
     const context = {
       userId: 'user-1',
       installationId: 'installation-1',
-      config: { sandboxMode: false },
+      config: {},
       data: {
         getTask: jest.fn().mockResolvedValue(baseTask)
       },
@@ -186,20 +186,25 @@ describe('quickbooks plugin', () => {
     const result = await handleWebhook({
       verified: true,
       realmId: 'realm-1',
-      body: {
-        eventNotifications: [
-          {
-            realmId: 'realm-1',
-            dataChangeEvent: {
-              entities: [{ name: 'TimeActivity', id: 'ta-1' }]
-            }
-          }
-        ]
-      }
+      body: [
+        {
+          specversion: '1.0',
+          id: '88cd52aa-33b6-4351-9aa4-47572edbd068',
+          type: 'qbo.timeactivity.updated.v1',
+          time: '2026-02-20T12:00:00Z',
+          intuitentityid: 'ta-1',
+          intuitaccountid: 'realm-1'
+        }
+      ]
     }, context);
 
     expect(result.syncedCount).toBe(1);
     expect(createTask).toHaveBeenCalled();
+    // Must use the Timesheet API datetime format (offset, no milliseconds, no 'Z').
+    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
+      startDateTime: '2026-02-20T10:00:00+00:00',
+      endDateTime: '2026-02-20T11:00:00+00:00'
+    }));
     expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
       entity: 'task',
       externalId: 'ta-1'

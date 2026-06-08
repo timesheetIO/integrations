@@ -12,12 +12,13 @@ Bidirectional synchronization between Timesheet tasks and QuickBooks Online `Tim
 
 OAuth 2.0 against Intuit, scope `com.intuit.quickbooks.accounting`. Each connected company is identified by its QuickBooks `realmId`, captured during the OAuth callback.
 
+The QuickBooks API host (production vs sandbox) is not a per-integration option. It follows the plugin-runtime deployment environment: the plugin reads `context.environment` and uses the sandbox host (`sandbox-quickbooks.api.intuit.com`) when it is `sandbox`, otherwise the production host. Set `PLUGIN_ENVIRONMENT=sandbox` on the non-production runtime.
+
 ## Configuration
 
 | Option | Required | Default | Description |
 | --- | --- | --- | --- |
 | `syncDirection` | yes | `bidirectional` | One of `bidirectional`, `timesheet-to-qb`, `qb-to-timesheet`. |
-| `sandboxMode` | no | `false` | Enable to test against a QuickBooks sandbox company. |
 
 ## Mappings
 
@@ -33,13 +34,7 @@ OAuth 2.0 against Intuit, scope `com.intuit.quickbooks.accounting`. Each connect
 
 ### Webhook
 
-QuickBooks allows only one app-wide webhook URL, so this plugin uses an app-level endpoint:
-
-```
-https://worker.timesheet.io/hooks/integration/app/quickbooks-sync
-```
-
-The backend verifies the Intuit signature against the app verifier token, extracts the `realmId` from the payload, and routes each event to the installation that owns that company. The verifier token is configured as a server-side secret, not per user. Register the URL above under Webhooks in the Intuit developer dashboard.
+QuickBooks allows only one app-wide webhook URL, so this plugin uses an app-level endpoint registered under Webhooks in the Intuit developer dashboard. The backend verifies the Intuit signature against the app verifier token, extracts the account id from the payload, and routes each event to the installation that owns that company. The verifier token is configured as a server-side secret, not per user.
 
 ## Development
 

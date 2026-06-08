@@ -9,7 +9,7 @@ import {
 
 interface QuickBooksClientOptions {
   realmId: string;
-  sandboxMode: boolean;
+  sandbox?: boolean;
   getAccessToken: () => Promise<string>;
   refreshAccessToken: () => Promise<string>;
 }
@@ -19,14 +19,14 @@ export class QuickBooksClient {
   private static readonly PAGE_SIZE = 1000;
 
   private readonly realmId: string;
-  private readonly sandboxMode: boolean;
+  private readonly sandbox: boolean;
   private cachedToken: string | null = null;
   private readonly fetchAccessToken: () => Promise<string>;
   private readonly fetchRefreshedToken: () => Promise<string>;
 
   constructor(options: QuickBooksClientOptions) {
     this.realmId = options.realmId;
-    this.sandboxMode = options.sandboxMode;
+    this.sandbox = options.sandbox === true;
     this.fetchAccessToken = options.getAccessToken;
     this.fetchRefreshedToken = options.refreshAccessToken;
   }
@@ -187,10 +187,10 @@ export class QuickBooksClient {
   }
 
   private baseUrl(): string {
-    const endpoint = this.sandboxMode
+    const host = this.sandbox
       ? 'https://sandbox-quickbooks.api.intuit.com/v3/company'
       : 'https://quickbooks.api.intuit.com/v3/company';
-    return `${endpoint}/${encodeURIComponent(this.realmId)}`;
+    return `${host}/${encodeURIComponent(this.realmId)}`;
   }
 }
 
