@@ -635,6 +635,11 @@ export async function ensureWatchChannels(
   const client = createClient(context);
   const now = Date.now();
   const watchTtlSeconds = 7 * 24 * 60 * 60; // 7 days
+  // Renew well before expiry. The main renewal driver is the daily sync, so the
+  // window must comfortably exceed a day — otherwise a once-a-day check almost
+  // always misses a tighter window and the watch lapses. 48h gives two daily
+  // runs to catch the renewal before the 7-day TTL runs out.
+  const renewWindowMs = 48 * 60 * 60 * 1000;
 
   for (const mapping of projectMappings) {
     if (!mapping.externalId) {
@@ -645,8 +650,8 @@ export async function ensureWatchChannels(
     const existingExpiration = readMetadataString(metadata, 'watchExpiration');
     if (existingExpiration) {
       const expiresAt = Number(existingExpiration);
-      if (expiresAt > now + 3600_000) {
-        // Watch still has > 1 hour remaining, skip
+      if (expiresAt > now + renewWindowMs) {
+        // Watch still has more than the renewal window remaining, skip
         continue;
       }
 
@@ -663,7 +668,14 @@ export async function ensureWatchChannels(
     }
 
     try {
-      const channelId = `ts-${context.installationId}-${mapping.externalId}-${now}`.replace(/[^A-Za-z0-9\-_+/=]/g, '_').substring(0, 64);
+      // Channel IDs must be unique per registration — Google rejects reuse with
+      // `channelIdNotUnique`. A random UUID is unique across renewals and across
+      // calendars in the same run, and is matched against the inbound
+      // x-goog-channel-id header via stored metadata, so it needn't embed the
+      // calendar id. The previous `ts-${installationId}-${externalId}-${now}`
+      // form overflowed the 64-char cap and truncated the `-${now}` suffix,
+      // yielding a constant id and breaking every renewal after the first.
+      const channelId = `ts-${globalThis.crypto.randomUUID()}`;
       context.logger.info(`Registering watch: calendar=${mapping.externalId} webhook=${webhookUrl} channelId=${channelId}`);
       const watchResult = await client.watchEvents(mapping.externalId, channelId, webhookUrl, watchTtlSeconds);
 
