@@ -27,6 +27,7 @@ export interface GoogleCalendarSyncResult {
 export interface SyncBatchCaches {
   projectMappingByLocalId?: Map<string, MappingRecord>;
   taskMappingByLocalId?: Map<string, MappingRecord>;
+  taskMappingByExternalId?: Map<string, MappingRecord>;
   projectById?: Map<string, ProjectDto>;
 }
 
@@ -165,9 +166,7 @@ export async function syncTaskToGoogleCalendar(
   });
 
   // Update in-memory cache so subsequent changes in the same batch see this mapping
-  if (caches?.taskMappingByLocalId) {
-    caches.taskMappingByLocalId.set(task.id, upsertedMapping);
-  }
+  putTaskMappingInCaches(caches, upsertedMapping);
 
   return {
     system: SYSTEM,
@@ -187,6 +186,7 @@ export async function runGoogleCalendarFullSync(
   if (projectMappings.length === 0) {
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'missing-project-mappings' } };
   }
+  const caches = buildMappingCaches(projectMappings);
 
   let syncedCount = 0;
   if (allowInbound) {
@@ -195,7 +195,7 @@ export async function runGoogleCalendarFullSync(
         continue;
       }
 
-      const perCalendarCount = await syncCalendar(context, mapping);
+      const perCalendarCount = await syncCalendar(context, mapping, caches);
       syncedCount += perCalendarCount;
     }
   }
@@ -229,6 +229,7 @@ export async function handleGoogleWebhook(
 
   const channelId = getHeader(input, 'x-goog-channel-id');
   const allProjectMappings = await context.mappings.list({ system: SYSTEM, entity: PROJECT_ENTITY });
+  const caches = buildMappingCaches(allProjectMappings);
 
   let projectMappings = allProjectMappings;
   if (channelId) {
@@ -255,7 +256,7 @@ export async function handleGoogleWebhook(
 
   let syncedCount = 0;
   for (const mapping of projectMappings) {
-    syncedCount += await syncCalendar(context, mapping);
+    syncedCount += await syncCalendar(context, mapping, caches);
   }
 
   return {
@@ -271,7 +272,8 @@ export async function handleGoogleWebhook(
 
 async function syncCalendar(
   context: IntegrationContext<GoogleCalendarConfig>,
-  projectMapping: MappingRecord
+  projectMapping: MappingRecord,
+  caches?: SyncBatchCaches
 ): Promise<number> {
   if (!projectMapping.externalId) {
     return 0;
@@ -288,14 +290,14 @@ async function syncCalendar(
   }
 
   try {
-    return await fetchAndSyncEvents(context, client, projectMapping, calendarId, syncStateKey, syncToken);
+    return await fetchAndSyncEvents(context, client, projectMapping, calendarId, syncStateKey, syncToken, caches);
   } catch (err) {
     // Google returns 400 or 410 when a sync token is invalid/expired — clear it and do a full resync
     const errMsg = String(err);
     if (syncToken && (errMsg.includes('(410)') || errMsg.includes('Invalid sync token'))) {
       context.logger.warn('Sync token expired, performing full resync', { calendarId });
       await context.state.delete(syncStateKey);
-      return await fetchAndSyncEvents(context, client, projectMapping, calendarId, syncStateKey, undefined);
+      return await fetchAndSyncEvents(context, client, projectMapping, calendarId, syncStateKey, undefined, caches);
     }
     throw err;
   }
@@ -307,7 +309,8 @@ async function fetchAndSyncEvents(
   projectMapping: MappingRecord,
   calendarId: string,
   syncStateKey: string,
-  syncToken: string | undefined
+  syncToken: string | undefined,
+  caches?: SyncBatchCaches
 ): Promise<number> {
   let pageToken: string | undefined;
   let nextSyncToken: string | undefined;
@@ -323,7 +326,7 @@ async function fetchAndSyncEvents(
     });
 
     for (const event of response.items ?? []) {
-      const synced = await syncSingleGoogleEvent(context, projectMapping, calendarId, event);
+      const synced = await syncSingleGoogleEvent(context, projectMapping, calendarId, event, caches);
       if (synced) {
         syncedCount += 1;
       }
@@ -344,17 +347,14 @@ async function syncSingleGoogleEvent(
   context: IntegrationContext<GoogleCalendarConfig>,
   projectMapping: MappingRecord,
   calendarId: string,
-  event: GoogleCalendarEvent
+  event: GoogleCalendarEvent,
+  caches?: SyncBatchCaches
 ): Promise<boolean> {
   if (!event?.id) {
     return false;
   }
 
-  const taskMapping = await context.mappings.findByExternal({
-    system: SYSTEM,
-    entity: TASK_ENTITY,
-    externalId: event.id
-  });
+  const taskMapping = await getTaskMappingByExternalId(context, event.id, caches);
 
   if (event.status === 'cancelled') {
     if (taskMapping?.localId) {
@@ -364,6 +364,7 @@ async function syncSingleGoogleEvent(
         entity: TASK_ENTITY,
         localId: taskMapping.localId
       });
+      removeTaskMappingFromCaches(caches, taskMapping);
       return true;
     }
     return false;
@@ -402,12 +403,29 @@ async function syncSingleGoogleEvent(
       },
       syncStatus: 'SYNCED'
     });
+    putTaskMappingInCaches(caches, {
+      localId: created.id,
+      externalId: event.id,
+      externalLabel: event.summary ?? event.id,
+      metadata: {
+        calendarId,
+        etag: event.etag ?? '',
+        updated: event.updated ?? ''
+      },
+      syncStatus: 'SYNCED'
+    });
 
     return true;
   }
 
-  const existing = await context.data.getTask(taskMapping.localId);
   const externalUpdatedAt = event.updated ? Date.parse(event.updated) : 0;
+  const mappedExternalUpdated = readMetadataString(taskMapping.metadata ?? {}, 'updated');
+  const mappedExternalUpdatedAt = mappedExternalUpdated ? Date.parse(mappedExternalUpdated) : 0;
+  if (externalUpdatedAt > 0 && mappedExternalUpdatedAt > 0 && externalUpdatedAt <= mappedExternalUpdatedAt) {
+    return false;
+  }
+
+  const existing = await context.data.getTask(taskMapping.localId);
   if (existing?.lastUpdate && externalUpdatedAt > 0 && externalUpdatedAt <= existing.lastUpdate) {
     return false;
   }
@@ -433,8 +451,75 @@ async function syncSingleGoogleEvent(
     },
     syncStatus: 'SYNCED'
   });
+  putTaskMappingInCaches(caches, {
+    localId: taskMapping.localId,
+    externalId: event.id,
+    externalLabel: event.summary ?? event.id,
+    metadata: {
+      calendarId,
+      etag: event.etag ?? '',
+      updated: event.updated ?? ''
+    },
+    syncStatus: 'SYNCED'
+  });
 
   return true;
+}
+
+function buildMappingCaches(projectMappings: MappingRecord[], taskMappings: MappingRecord[] = []): SyncBatchCaches {
+  const projectMappingByLocalId = new Map<string, MappingRecord>();
+  for (const mapping of projectMappings) {
+    projectMappingByLocalId.set(mapping.localId, mapping);
+  }
+
+  const taskMappingByLocalId = new Map<string, MappingRecord>();
+  const taskMappingByExternalId = new Map<string, MappingRecord>();
+  for (const mapping of taskMappings) {
+    taskMappingByLocalId.set(mapping.localId, mapping);
+    if (mapping.externalId) {
+      taskMappingByExternalId.set(mapping.externalId, mapping);
+    }
+  }
+
+  return {
+    projectMappingByLocalId,
+    taskMappingByLocalId,
+    taskMappingByExternalId
+  };
+}
+
+async function getTaskMappingByExternalId(
+  context: IntegrationContext<GoogleCalendarConfig>,
+  externalId: string,
+  caches?: SyncBatchCaches
+): Promise<MappingRecord | null> {
+  if (caches?.taskMappingByExternalId?.has(externalId)) {
+    return caches.taskMappingByExternalId.get(externalId) ?? null;
+  }
+
+  const mapping = await context.mappings.findByExternal({
+    system: SYSTEM,
+    entity: TASK_ENTITY,
+    externalId
+  });
+  if (mapping) {
+    putTaskMappingInCaches(caches, mapping);
+  }
+  return mapping;
+}
+
+function putTaskMappingInCaches(caches: SyncBatchCaches | undefined, mapping: MappingRecord): void {
+  caches?.taskMappingByLocalId?.set(mapping.localId, mapping);
+  if (mapping.externalId) {
+    caches?.taskMappingByExternalId?.set(mapping.externalId, mapping);
+  }
+}
+
+function removeTaskMappingFromCaches(caches: SyncBatchCaches | undefined, mapping: MappingRecord): void {
+  caches?.taskMappingByLocalId?.delete(mapping.localId);
+  if (mapping.externalId) {
+    caches?.taskMappingByExternalId?.delete(mapping.externalId);
+  }
 }
 
 function toTaskDateRange(event: GoogleCalendarEvent): { startDateTime: string; endDateTime: string } | null {

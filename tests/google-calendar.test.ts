@@ -185,4 +185,80 @@ describe('google-calendar plugin', () => {
     expect(upsert).toHaveBeenCalledWith(expect.objectContaining({ externalId: 'event-1' }));
     expect(stateSet).toHaveBeenCalledWith('google-calendar:sync-token:calendar-1', 'next-token');
   });
+
+  it('skips mapped external events unchanged since the last sync metadata', async () => {
+    const getTask = jest.fn();
+    const updateTask = jest.fn();
+
+    const context = {
+      userId: 'user-1',
+      installationId: 'installation-1',
+      config: {},
+      data: {
+        createTask: jest.fn(),
+        getTask,
+        updateTask,
+        deleteTask: jest.fn()
+      },
+      credentials: {
+        getAccessToken: jest.fn().mockResolvedValue('token'),
+        refreshToken: jest.fn().mockResolvedValue('token-2')
+      },
+      mappings: {
+        list: jest.fn().mockResolvedValue([{ localId: 'project-1', externalId: 'calendar-1', syncStatus: 'SYNCED' }]),
+        findByExternal: jest.fn().mockResolvedValue({
+          localId: 'task-1',
+          externalId: 'event-1',
+          syncStatus: 'SYNCED',
+          metadata: {
+            calendarId: 'calendar-1',
+            updated: '2026-02-20T11:10:00Z'
+          }
+        }),
+        upsert: jest.fn(),
+        get: jest.fn(),
+        delete: jest.fn()
+      },
+      state: {
+        get: jest.fn().mockResolvedValue(null),
+        set: jest.fn(),
+        delete: jest.fn()
+      },
+      logger: {
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn()
+      }
+    } as unknown as IntegrationContext;
+
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: { forEach: () => {} },
+      json: async () => ({
+        items: [
+          {
+            id: 'event-1',
+            summary: 'Imported',
+            description: 'Created in Google',
+            start: { dateTime: '2026-02-20T10:00:00Z' },
+            end: { dateTime: '2026-02-20T11:00:00Z' },
+            updated: '2026-02-20T11:10:00Z'
+          }
+        ],
+        nextSyncToken: 'next-token'
+      }),
+      text: async () => '{}'
+    });
+
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock as typeof fetch;
+
+    const result = await runFullSync(undefined, context);
+
+    expect(result.syncedCount).toBe(0);
+    expect(getTask).not.toHaveBeenCalled();
+    expect(updateTask).not.toHaveBeenCalled();
+  });
 });
