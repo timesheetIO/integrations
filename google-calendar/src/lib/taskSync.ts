@@ -41,6 +41,11 @@ interface FetchAndSyncOptions {
   fallbackUpdatedMin?: string;
 }
 
+interface FullSyncOptions {
+  fallbackUpdatedMin?: string;
+  lockTtlSeconds?: number;
+}
+
 // Shared client instance for batch execution — avoids re-fetching the access token per change.
 let sharedClient: GoogleCalendarClient | null = null;
 
@@ -187,7 +192,8 @@ export async function syncTaskToGoogleCalendar(
 }
 
 export async function runGoogleCalendarFullSync(
-  context: IntegrationContext<GoogleCalendarConfig>
+  context: IntegrationContext<GoogleCalendarConfig>,
+  options: FullSyncOptions = {}
 ): Promise<GoogleCalendarSyncResult> {
   const syncDirection = context.config?.syncDirection ?? 'bidirectional';
   const allowInbound = syncDirection !== 'timesheet-to-google' && syncDirection !== 'timesheet-to-external';
@@ -205,7 +211,11 @@ export async function runGoogleCalendarFullSync(
         continue;
       }
 
-      const perCalendarCount = await syncCalendar(context, mapping, { caches });
+      const perCalendarCount = await syncCalendar(context, mapping, {
+        caches,
+        fallbackUpdatedMin: options.fallbackUpdatedMin,
+        lockTtlSeconds: options.lockTtlSeconds
+      });
       syncedCount += perCalendarCount;
     }
   }
@@ -309,17 +319,19 @@ async function syncCalendar(
   const client = createClient(context);
   const calendarId = projectMapping.externalId;
   const lockKey = getSyncLockStateKey(calendarId);
+  let acquiredLock = false;
   if (options.lockTtlSeconds && options.lockTtlSeconds > 0) {
-    const existingLock = await context.state.get<number | string>(lockKey);
-    const existingLockMillis = Number(existingLock);
-    if (Number.isFinite(existingLockMillis) && Date.now() - existingLockMillis < options.lockTtlSeconds * 1000) {
-      context.logger.info('Calendar sync already in progress, skipping duplicate webhook', {
-        calendarId,
-        lockAgeMs: Date.now() - existingLockMillis
-      });
-      return 0;
+    try {
+      const lockOptions = { ttlSeconds: options.lockTtlSeconds, ifAbsent: true };
+      await context.state.set(lockKey, Date.now(), lockOptions);
+      acquiredLock = true;
+    } catch (err) {
+      if (isStateConflictError(err)) {
+        context.logger.info('Calendar sync already in progress, skipping duplicate webhook', { calendarId });
+        return 0;
+      }
+      throw err;
     }
-    await context.state.set(lockKey, Date.now(), { ttlSeconds: options.lockTtlSeconds });
   }
 
   const syncStateKey = getSyncTokenStateKey(calendarId);
@@ -369,7 +381,7 @@ async function syncCalendar(
       throw err;
     }
   } finally {
-    if (options.lockTtlSeconds && options.lockTtlSeconds > 0) {
+    if (acquiredLock) {
       try {
         await context.state.delete(lockKey);
       } catch (err) {
@@ -377,6 +389,13 @@ async function syncCalendar(
       }
     }
   }
+}
+
+function isStateConflictError(err: unknown): boolean {
+  const message = String(err);
+  return message.includes('Timesheet API request failed (409)')
+    || message.includes('StateConflict')
+    || message.includes('State key already exists');
 }
 
 async function fetchAndSyncEvents(

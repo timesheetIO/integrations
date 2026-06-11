@@ -117,7 +117,7 @@ describe('google-calendar plugin', () => {
     }));
   });
 
-  it('imports external events and stores sync token during full sync', async () => {
+  it('imports recently updated external events and stores sync token during manual sync', async () => {
     const createTask = jest.fn().mockResolvedValue({ id: 'task-created' });
     const upsert = jest.fn();
     const stateSet = jest.fn();
@@ -180,10 +180,13 @@ describe('google-calendar plugin', () => {
     (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock as typeof fetch;
 
     const result = await runFullSync(undefined, context);
+    const requestedUrl = new URL(String(fetchMock.mock.calls[0][0]));
 
     expect(result.syncedCount).toBe(1);
     expect(createTask).toHaveBeenCalled();
     expect(upsert).toHaveBeenCalledWith(expect.objectContaining({ externalId: 'event-1' }));
+    expect(requestedUrl.searchParams.has('updatedMin')).toBe(true);
+    expect(requestedUrl.searchParams.has('timeMin')).toBe(false);
     expect(stateSet).toHaveBeenCalledWith('google-calendar:sync-token:calendar-1', 'next-token');
   });
 
@@ -372,8 +375,8 @@ describe('google-calendar plugin', () => {
         delete: jest.fn()
       },
       state: {
-        get: jest.fn().mockResolvedValue(Date.now()),
-        set: jest.fn(),
+        get: jest.fn(),
+        set: jest.fn().mockRejectedValue(new Error('Timesheet API request failed (409) PUT /state: StateConflict')),
         delete: jest.fn()
       },
       logger: {
@@ -392,6 +395,12 @@ describe('google-calendar plugin', () => {
     }, context);
 
     expect(result.syncedCount).toBe(0);
+    expect(context.state.set).toHaveBeenCalledWith(
+      'google-calendar:sync-lock:calendar-1',
+      expect.any(Number),
+      { ttlSeconds: 900, ifAbsent: true }
+    );
+    expect(context.state.delete).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

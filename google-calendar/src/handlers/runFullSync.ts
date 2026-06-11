@@ -2,13 +2,28 @@ import { defineHandler } from '@timesheet/integration-sdk';
 import { GoogleCalendarConfig } from '../lib/types';
 import { GoogleCalendarSyncResult, runGoogleCalendarFullSync, ensureWatchChannels } from '../lib/taskSync';
 
-export const runFullSync = defineHandler<void, GoogleCalendarSyncResult, GoogleCalendarConfig>(
-  async (_input, context) => {
+interface ManualSyncInput {
+  fullResync?: boolean;
+  recentDays?: number;
+}
+
+export const runFullSync = defineHandler<ManualSyncInput | void, GoogleCalendarSyncResult, GoogleCalendarConfig>(
+  async (input, context) => {
     const syncDirection = context.config?.syncDirection ?? 'bidirectional';
+    const fullResync = !!input?.fullResync;
+    const recentDays = Number.isFinite(input?.recentDays) && input?.recentDays && input.recentDays > 0
+      ? Math.min(Math.floor(input.recentDays), 30)
+      : 7;
+    const fallbackUpdatedMin = fullResync
+      ? undefined
+      : new Date(Date.now() - (recentDays * 24 * 60 * 60 * 1000)).toISOString();
+
     context.logger.info('Running Google Calendar manual sync', {
       installationId: context.installationId,
       syncDirection,
-      hasWebhookUrl: !!context.metadata?.webhooks?.['integration-webhook']
+      hasWebhookUrl: !!context.metadata?.webhooks?.['integration-webhook'],
+      syncMode: fullResync ? 'full' : 'recent',
+      recentDays: fullResync ? undefined : recentDays
     });
 
     // Register watch channels — this is the critical part for inbound sync.
@@ -25,14 +40,26 @@ export const runFullSync = defineHandler<void, GoogleCalendarSyncResult, GoogleC
         system: 'google-calendar',
         status: 'completed',
         syncedCount: 0,
-        details: { watchChannelsRegistered: true, syncDirection }
+        details: {
+          watchChannelsRegistered: true,
+          syncDirection,
+          syncMode: fullResync ? 'full' : 'recent'
+        }
       };
     }
 
-    const result = await runGoogleCalendarFullSync(context);
+    const result = await runGoogleCalendarFullSync(context, {
+      fallbackUpdatedMin,
+      lockTtlSeconds: fullResync ? undefined : 15 * 60
+    });
     return {
       ...result,
-      details: { ...result.details, watchChannelsRegistered: true }
+      details: {
+        ...result.details,
+        watchChannelsRegistered: true,
+        syncMode: fullResync ? 'full' : 'recent',
+        recentDays: fullResync ? undefined : recentDays
+      }
     };
   }
 );
