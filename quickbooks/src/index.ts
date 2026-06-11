@@ -6,6 +6,7 @@ export { runFullSync } from './handlers/runFullSync';
 export { testConnection } from './handlers/testConnection';
 export { listExternalProjects } from './handlers/listExternalProjects';
 export { listExternalUsers } from './handlers/listExternalUsers';
+export { listExternalServices } from './handlers/listExternalServices';
 
 export const PLUGIN_SYSTEM = 'quickbooks';
 export const PLUGIN_NAME = 'QuickBooks Sync';

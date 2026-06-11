@@ -18,6 +18,7 @@ const SYSTEM = 'quickbooks';
 const PROJECT_ENTITY = 'project';
 const USER_ENTITY = 'user';
 const TASK_ENTITY = 'task';
+const RATE_ENTITY = 'rate';
 const SYNC_STATE_KEY = 'quickbooks:last-sync-time';
 
 export interface QuickBooksSyncResult {
@@ -31,6 +32,7 @@ export interface SyncBatchCaches {
   projectMappingByLocalId?: Map<string, MappingRecord>;
   userMappingByLocalId?: Map<string, MappingRecord>;
   taskMappingByLocalId?: Map<string, MappingRecord>;
+  rateMappingByLocalId?: Map<string, MappingRecord>;
 }
 
 // Shared client per batch keyed by realmId — avoids re-fetching the access token
@@ -107,9 +109,21 @@ export async function syncTaskToQuickBooks(
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'already-deleted' } };
   }
 
+  const rateId = task.rate?.id;
+  const rateMapping = rateId
+    ? await getMapping(context, caches?.rateMappingByLocalId, RATE_ENTITY, rateId)
+    : null;
+  const hourlyRate = await resolveHourlyRateForPush(task, context);
+
   let payload: Record<string, unknown>;
   try {
-    payload = buildTimeActivityPayload(task, projectMapping.externalId, userMapping.externalId);
+    payload = buildTimeActivityPayload(
+      task,
+      projectMapping.externalId,
+      userMapping.externalId,
+      rateMapping?.externalId,
+      hourlyRate
+    );
   } catch (err) {
     context.logger.warn('Failed to build time activity payload', { taskId: task.id, error: String(err) });
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'invalid-task-data', taskId: task.id } };
@@ -139,6 +153,7 @@ export async function syncTaskToQuickBooks(
     metadata: {
       customerId: projectMapping.externalId,
       employeeId: userMapping.externalId,
+      ...(rateMapping?.externalId ? { itemId: rateMapping.externalId } : {}),
       syncToken: external.SyncToken ?? '',
       txnDate: external.TxnDate ?? ''
     },
@@ -193,8 +208,10 @@ export async function runQuickBooksFullSync(
     };
   }
 
+  const rateMappings = await context.mappings.list({ system: SYSTEM, entity: RATE_ENTITY });
   const projectByExternalId = new Map(projectMappings.map((mapping) => [mapping.externalId, mapping.localId]));
   const userByExternalId = new Map(userMappings.map((mapping) => [mapping.externalId, mapping.localId]));
+  const rateByExternalId = new Map(rateMappings.map((mapping) => [mapping.externalId, mapping.localId]));
 
   const lastSyncTime = (await context.state.get<string>(SYNC_STATE_KEY)) ?? undefined;
   const startedAt = new Date().toISOString();
@@ -208,7 +225,8 @@ export async function runQuickBooksFullSync(
       activity,
       context,
       projectByExternalId,
-      userByExternalId
+      userByExternalId,
+      rateByExternalId
     );
     if (synced) {
       syncedCount += 1;
@@ -320,8 +338,10 @@ async function processInboundChanges(
 
   const projectMappings = await context.mappings.list({ system: SYSTEM, entity: PROJECT_ENTITY });
   const userMappings = await context.mappings.list({ system: SYSTEM, entity: USER_ENTITY });
+  const rateMappings = await context.mappings.list({ system: SYSTEM, entity: RATE_ENTITY });
   const projectByExternalId = new Map(projectMappings.map((mapping) => [mapping.externalId, mapping.localId]));
   const userByExternalId = new Map(userMappings.map((mapping) => [mapping.externalId, mapping.localId]));
+  const rateByExternalId = new Map(rateMappings.map((mapping) => [mapping.externalId, mapping.localId]));
 
   const byRealm = new Map<string, EntityChange[]>();
   for (const change of changes) {
@@ -351,7 +371,8 @@ async function processInboundChanges(
         activity,
         context,
         projectByExternalId,
-        userByExternalId
+        userByExternalId,
+        rateByExternalId
       );
 
       if (synced) {
@@ -435,7 +456,8 @@ async function syncSingleExternalActivity(
   activity: QuickBooksTimeActivity,
   context: IntegrationContext<QuickBooksConfig>,
   projectByExternalId: Map<string, string>,
-  userByExternalId: Map<string, string>
+  userByExternalId: Map<string, string>,
+  rateByExternalId: Map<string, string>
 ): Promise<boolean> {
   if (!activity?.Id) {
     return false;
@@ -452,6 +474,11 @@ async function syncSingleExternalActivity(
   if (!localProjectId || !localUserId) {
     return false;
   }
+
+  // Only set the rate when the activity's service item is mapped — an absent or
+  // unmapped ItemRef must not clear a locally assigned rate.
+  const externalItemId = activity.ItemRef?.value;
+  const localRateId = externalItemId ? rateByExternalId.get(externalItemId) : undefined;
 
   const dateRange = buildTaskDateRange(activity);
   if (!dateRange) {
@@ -472,7 +499,8 @@ async function syncSingleExternalActivity(
       endDateTime: dateRange.endDateTime,
       description: activity.Description ?? '',
       billable: isBillable(activity.BillableStatus),
-      billed: isBilled(activity.BillableStatus)
+      billed: isBilled(activity.BillableStatus),
+      ...(localRateId ? { rateId: localRateId } : {})
     } as TaskCreateInput);
 
     await context.mappings.upsert({
@@ -504,7 +532,8 @@ async function syncSingleExternalActivity(
     endDateTime: dateRange.endDateTime,
     description: activity.Description ?? '',
     billable: isBillable(activity.BillableStatus),
-    billed: isBilled(activity.BillableStatus)
+    billed: isBilled(activity.BillableStatus),
+    ...(localRateId ? { rateId: localRateId } : {})
   } as TaskUpdateInput);
 
   await context.mappings.upsert({
@@ -582,6 +611,10 @@ async function loadTask(
     if (!raw.user && userId) {
       raw.user = userId;
     }
+    const rateId = raw.rateId as string | undefined;
+    if (!raw.rate && rateId) {
+      raw.rate = { id: rateId };
+    }
     if (!raw.id && raw.taskId) {
       raw.id = raw.taskId;
     }
@@ -603,7 +636,9 @@ function resolveTaskId(input: SyncInput): string | undefined {
 function buildTimeActivityPayload(
   task: TaskDto,
   externalCustomerId: string,
-  externalEmployeeId: string
+  externalEmployeeId: string,
+  externalItemId?: string,
+  hourlyRate?: number
 ): Record<string, unknown> {
   const start = parseDate(task.startDateTime);
   const end = parseDate(task.endDateTime);
@@ -612,7 +647,7 @@ function buildTimeActivityPayload(
     throw new Error(`Task ${task.id} is missing start or end datetime.`);
   }
 
-  return {
+  const payload: Record<string, unknown> = {
     TxnDate: start.toISOString().slice(0, 10),
     StartTime: start.toISOString(),
     EndTime: end.toISOString(),
@@ -627,6 +662,54 @@ function buildTimeActivityPayload(
       value: externalEmployeeId
     }
   };
+
+  if (externalItemId) {
+    payload.ItemRef = { value: externalItemId };
+  }
+  if (hourlyRate !== undefined) {
+    payload.HourlyRate = hourlyRate;
+  }
+
+  return payload;
+}
+
+// With rateSource 'timesheet-rate' the QuickBooks entry carries an explicit
+// HourlyRate so invoice lines match Timesheet instead of the service item's
+// sales price. salaryTotal is computed server-side as wall-hours × project
+// salary × rate factor + wall-hours × rate extra (zeroed when not billable or
+// when salary is hidden from the installation user), so salaryTotal divided by
+// wall-hours reconstructs the effective hourly rate.
+async function resolveHourlyRateForPush(
+  task: TaskDto,
+  context: IntegrationContext<QuickBooksConfig>
+): Promise<number | undefined> {
+  const rateSource = context.config?.rateSource ?? 'quickbooks-service';
+  if (rateSource !== 'timesheet-rate' || !task.billable) {
+    return undefined;
+  }
+
+  let hourlyRate = computeHourlyRate(task);
+  if (hourlyRate === undefined && task.salaryTotal === undefined) {
+    // Inline sync payloads carry no computed salary fields — fall back to the full task.
+    try {
+      const full = await context.data.getTask(task.id);
+      if (full) {
+        hourlyRate = computeHourlyRate(full);
+      }
+    } catch {
+      // Leave HourlyRate unset; QuickBooks falls back to the service item price.
+    }
+  }
+  return hourlyRate;
+}
+
+function computeHourlyRate(task: TaskDto): number | undefined {
+  const salaryTotal = Number(task.salaryTotal);
+  const duration = Number(task.duration);
+  if (!Number.isFinite(salaryTotal) || salaryTotal <= 0 || !Number.isFinite(duration) || duration <= 0) {
+    return undefined;
+  }
+  return Math.round((salaryTotal / (duration / 3600)) * 100) / 100;
 }
 
 // The Timesheet API datetime format is `yyyy-MM-dd'T'HH:mm:ssxxx`

@@ -137,7 +137,8 @@ describe('quickbooks plugin', () => {
         list: jest
           .fn()
           .mockResolvedValueOnce([{ localId: 'project-1', externalId: 'customer-1', syncStatus: 'SYNCED' }])
-          .mockResolvedValueOnce([{ localId: 'user-1', externalId: 'employee-1', syncStatus: 'SYNCED' }]),
+          .mockResolvedValueOnce([{ localId: 'user-1', externalId: 'employee-1', syncStatus: 'SYNCED' }])
+          .mockResolvedValueOnce([{ localId: 'rate-1', externalId: 'item-1', syncStatus: 'SYNCED' }]),
         findByExternal: jest.fn().mockResolvedValue(null),
         upsert,
         get: jest.fn(),
@@ -169,6 +170,7 @@ describe('quickbooks plugin', () => {
               Description: 'Imported from QB',
               CustomerRef: { value: 'customer-1' },
               EmployeeRef: { value: 'employee-1' },
+              ItemRef: { value: 'item-1' },
               StartTime: '2026-02-20T10:00:00Z',
               EndTime: '2026-02-20T11:00:00Z',
               BillableStatus: 'Billable',
@@ -203,11 +205,118 @@ describe('quickbooks plugin', () => {
     // Must use the Timesheet API datetime format (offset, no milliseconds, no 'Z').
     expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
       startDateTime: '2026-02-20T10:00:00+00:00',
-      endDateTime: '2026-02-20T11:00:00+00:00'
+      endDateTime: '2026-02-20T11:00:00+00:00',
+      rateId: 'rate-1'
     }));
     expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
       entity: 'task',
       externalId: 'ta-1'
     }));
+  });
+
+  const ratedTask: TaskDto = {
+    ...baseTask,
+    duration: 3600,
+    salaryTotal: '150',
+    rate: {
+      id: 'rate-1',
+      user: 'user-1',
+      title: 'Senior',
+      factor: '1.5',
+      extra: '0',
+      enabled: true,
+      archived: false,
+      deleted: false,
+      lastUpdate: Date.now(),
+      created: Date.now()
+    }
+  };
+
+  function buildOutboundContext(config: Record<string, unknown>, upsert: jest.Mock): IntegrationContext {
+    return {
+      userId: 'user-1',
+      installationId: 'installation-1',
+      config,
+      data: {
+        getTask: jest.fn().mockResolvedValue(ratedTask)
+      },
+      credentials: {
+        getAccessToken: jest.fn().mockResolvedValue('token'),
+        refreshToken: jest.fn().mockResolvedValue('token-2'),
+        getConnectionInfo: jest.fn().mockResolvedValue({ connected: true, provider: 'quickbooks', accountId: 'realm-1' })
+      },
+      mappings: {
+        get: jest
+          .fn()
+          .mockResolvedValueOnce({ localId: 'project-1', externalId: 'customer-1', syncStatus: 'SYNCED' })
+          .mockResolvedValueOnce({ localId: 'user-1', externalId: 'employee-1', syncStatus: 'SYNCED' })
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce({ localId: 'rate-1', externalId: 'item-1', syncStatus: 'SYNCED' }),
+        delete: jest.fn(),
+        findByExternal: jest.fn(),
+        list: jest.fn(),
+        upsert
+      },
+      state: {
+        get: jest.fn(),
+        set: jest.fn(),
+        delete: jest.fn()
+      },
+      logger: {
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn()
+      }
+    } as unknown as IntegrationContext;
+  }
+
+  function mockCreateTimeActivityFetch(): jest.Mock {
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: { forEach: () => {} },
+      json: async () => ({
+        TimeActivity: {
+          Id: 'ta-1',
+          SyncToken: '0',
+          TxnDate: '2026-02-20'
+        }
+      }),
+      text: async () => '{}'
+    });
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock as typeof fetch;
+    return fetchMock;
+  }
+
+  it('sends the mapped service item and Timesheet hourly rate when configured', async () => {
+    const upsert = jest.fn();
+    const context = buildOutboundContext({ rateSource: 'timesheet-rate' }, upsert);
+    const fetchMock = mockCreateTimeActivityFetch();
+
+    const result = await syncTaskToExternal({ taskId: 'task-1' }, context);
+
+    expect(result.status).toBe('synced');
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1].body));
+    expect(body.ItemRef).toEqual({ value: 'item-1' });
+    // salaryTotal 150 over a 3600s task is an effective rate of 150/h.
+    expect(body.HourlyRate).toBe(150);
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({ itemId: 'item-1' })
+    }));
+  });
+
+  it('omits HourlyRate when the rate source is the QuickBooks service price', async () => {
+    const upsert = jest.fn();
+    const context = buildOutboundContext({}, upsert);
+    const fetchMock = mockCreateTimeActivityFetch();
+
+    const result = await syncTaskToExternal({ taskId: 'task-1' }, context);
+
+    expect(result.status).toBe('synced');
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1].body));
+    expect(body.ItemRef).toEqual({ value: 'item-1' });
+    expect(body.HourlyRate).toBeUndefined();
   });
 });

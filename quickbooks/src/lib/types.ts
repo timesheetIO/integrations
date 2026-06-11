@@ -2,6 +2,7 @@ import { TaskDto } from '@timesheet/integration-sdk';
 
 export interface QuickBooksConfig {
   syncDirection?: 'bidirectional' | 'timesheet-to-qb' | 'qb-to-timesheet' | 'timesheet-to-external' | 'external-to-timesheet';
+  rateSource?: 'quickbooks-service' | 'timesheet-rate';
   webhookVerifierToken?: string;
 }
 
@@ -26,8 +27,10 @@ export interface QuickBooksTimeActivity {
   Minutes?: number;
   Description?: string;
   BillableStatus?: string;
+  HourlyRate?: number;
   CustomerRef?: QuickBooksRef;
   EmployeeRef?: QuickBooksRef;
+  ItemRef?: QuickBooksRef;
   MetaData?: QuickBooksMetaData;
 }
 
@@ -46,10 +49,20 @@ export interface QuickBooksEmployee {
   Active?: boolean;
 }
 
+export interface QuickBooksItem {
+  Id: string;
+  Name?: string;
+  FullyQualifiedName?: string;
+  Type?: string;
+  Active?: boolean;
+  UnitPrice?: number;
+}
+
 export interface QuickBooksQueryResponse {
   QueryResponse?: {
     Customer?: QuickBooksCustomer[];
     Employee?: QuickBooksEmployee[];
+    Item?: QuickBooksItem[];
     TimeActivity?: QuickBooksTimeActivity[];
     CompanyInfo?: Array<Record<string, unknown>>;
     startPosition?: number;

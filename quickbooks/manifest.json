@@ -1,7 +1,7 @@
 {
   "id": "quickbooks-sync",
   "name": "QuickBooks Time Sync",
-  "version": "1.4.5",
+  "version": "1.5.0",
   "description": "Synchronize tasks with QuickBooks Online",
   "longDescription": "Bidirectional synchronization between Timesheet tasks and QuickBooks TimeActivity entries.",
   "icon": "quickbooks",
@@ -27,6 +27,14 @@
         "title": "Sync Direction",
         "enum": ["bidirectional", "timesheet-to-qb", "qb-to-timesheet"],
         "default": "bidirectional",
+        "x-ui-widget": "radio"
+      },
+      "rateSource": {
+        "type": "string",
+        "title": "Billing Rate Source",
+        "description": "Where the billable rate on QuickBooks time entries comes from: the sales price of the mapped QuickBooks service, or the Timesheet rate calculated per task",
+        "enum": ["quickbooks-service", "timesheet-rate"],
+        "default": "quickbooks-service",
         "x-ui-widget": "radio"
       }
     },
@@ -68,6 +76,22 @@
         },
         "required": true,
         "minMappings": 1
+      },
+      {
+        "id": "rates",
+        "title": "Rate Mapping",
+        "description": "Map Timesheet rates to QuickBooks service items",
+        "localEntity": {
+          "type": "rate",
+          "label": "Timesheet Rate",
+          "display": "{{title}}"
+        },
+        "externalEntity": {
+          "type": "item",
+          "label": "QuickBooks Service",
+          "fetchAction": "list-external-services"
+        },
+        "required": false
       }
     ]
   },
@@ -163,6 +187,11 @@
     {
       "id": "list-external-users",
       "handler": "listExternalUsers",
+      "internal": true
+    },
+    {
+      "id": "list-external-services",
+      "handler": "listExternalServices",
       "internal": true
     }
   ],

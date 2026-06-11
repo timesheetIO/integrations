@@ -3,6 +3,7 @@ import {
   QuickBooksCreateOrUpdateResponse,
   QuickBooksCustomer,
   QuickBooksEmployee,
+  QuickBooksItem,
   QuickBooksQueryResponse,
   QuickBooksTimeActivity
 } from './types';
@@ -53,6 +54,15 @@ export class QuickBooksClient {
       name: employee.DisplayName
         ?? ([employee.GivenName, employee.FamilyName].filter(Boolean).join(' ').trim() || employee.Id),
       active: employee.Active ?? true
+    }));
+  }
+
+  async listServiceItems(): Promise<ExternalEntity[]> {
+    const items = await this.queryAll<QuickBooksItem>('Item', "select * from item where Type = 'Service'");
+    return items.map((item) => ({
+      id: item.Id,
+      name: item.FullyQualifiedName ?? item.Name ?? item.Id,
+      active: item.Active ?? true
     }));
   }
 

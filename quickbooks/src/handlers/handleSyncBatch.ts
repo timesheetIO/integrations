@@ -6,6 +6,7 @@ const SYSTEM = 'quickbooks';
 const PROJECT_ENTITY = 'project';
 const USER_ENTITY = 'user';
 const TASK_ENTITY = 'task';
+const RATE_ENTITY = 'rate';
 
 export const handleSyncBatch = defineHandler<SyncModeInput, QuickBooksSyncResult, QuickBooksConfig>(
   async (input, context) => {
@@ -16,10 +17,11 @@ export const handleSyncBatch = defineHandler<SyncModeInput, QuickBooksSyncResult
       hasMore: input.hasMore
     });
 
-    const [projectMappings, userMappings, taskMappings] = await Promise.all([
+    const [projectMappings, userMappings, taskMappings, rateMappings] = await Promise.all([
       context.mappings.list({ system: SYSTEM, entity: PROJECT_ENTITY }),
       context.mappings.list({ system: SYSTEM, entity: USER_ENTITY }),
-      context.mappings.list({ system: SYSTEM, entity: TASK_ENTITY })
+      context.mappings.list({ system: SYSTEM, entity: TASK_ENTITY }),
+      context.mappings.list({ system: SYSTEM, entity: RATE_ENTITY })
     ]);
 
     const projectMappingByLocalId = new Map<string, MappingRecord>();
@@ -33,6 +35,10 @@ export const handleSyncBatch = defineHandler<SyncModeInput, QuickBooksSyncResult
     const taskMappingByLocalId = new Map<string, MappingRecord>();
     for (const mapping of taskMappings) {
       taskMappingByLocalId.set(mapping.localId, mapping);
+    }
+    const rateMappingByLocalId = new Map<string, MappingRecord>();
+    for (const mapping of rateMappings) {
+      rateMappingByLocalId.set(mapping.localId, mapping);
     }
 
     let syncedCount = 0;
@@ -53,7 +59,7 @@ export const handleSyncBatch = defineHandler<SyncModeInput, QuickBooksSyncResult
             item
           },
           context,
-          { projectMappingByLocalId, userMappingByLocalId, taskMappingByLocalId }
+          { projectMappingByLocalId, userMappingByLocalId, taskMappingByLocalId, rateMappingByLocalId }
         );
 
         if (result.status === 'synced' || result.status === 'deleted') {
