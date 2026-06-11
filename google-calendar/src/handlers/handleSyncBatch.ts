@@ -24,8 +24,12 @@ export const handleSyncBatch = defineHandler<SyncModeInput, GoogleCalendarSyncRe
       projectMappingByLocalId.set(mapping.localId, mapping);
     }
     const taskMappingByLocalId = new Map<string, MappingRecord>();
+    const taskMappingByExternalId = new Map<string, MappingRecord>();
     for (const mapping of taskMappings) {
       taskMappingByLocalId.set(mapping.localId, mapping);
+      if (mapping.externalId) {
+        taskMappingByExternalId.set(mapping.externalId, mapping);
+      }
     }
 
     // Pre-load mapped projects (title, color, employer) for event payload enrichment
@@ -60,7 +64,7 @@ export const handleSyncBatch = defineHandler<SyncModeInput, GoogleCalendarSyncRe
             item: change.item as Record<string, unknown> & { id?: string }
           },
           context,
-          { projectMappingByLocalId, taskMappingByLocalId, projectById }
+          { projectMappingByLocalId, taskMappingByLocalId, taskMappingByExternalId, projectById }
         );
 
         if (result.status === 'synced' || result.status === 'deleted') {

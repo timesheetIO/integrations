@@ -16,6 +16,8 @@ import {
 const SYSTEM = 'google-calendar';
 const PROJECT_ENTITY = 'project';
 const TASK_ENTITY = 'task';
+const WEBHOOK_FALLBACK_WINDOW_MS = 10 * 60 * 1000;
+const EVENT_IMPORT_LOCK_TTL_SECONDS = 60 * 60;
 
 export interface GoogleCalendarSyncResult {
   system: string;
@@ -39,6 +41,7 @@ interface SyncCalendarOptions {
 
 interface FetchAndSyncOptions {
   fallbackUpdatedMin?: string;
+  importLockTtlSeconds?: number;
 }
 
 interface FullSyncOptions {
@@ -138,6 +141,17 @@ export async function syncTaskToGoogleCalendar(
   let externalEvent: GoogleCalendarEvent;
 
   if (taskMapping?.externalId) {
+    const mappedTaskUpdatedAt = readMetadataNumber(taskMapping.metadata ?? {}, 'timesheetUpdatedAt');
+    const taskUpdatedAt = getTaskLastUpdateMillis(task);
+    if (mappedTaskUpdatedAt > 0 && taskUpdatedAt > 0 && taskUpdatedAt <= mappedTaskUpdatedAt) {
+      return {
+        system: SYSTEM,
+        status: 'skipped',
+        syncedCount: 0,
+        details: { reason: 'already-synced-task-change', taskId: task.id }
+      };
+    }
+
     const mappedCalendarId = getMappedCalendarId(taskMapping) ?? externalCalendarId;
     context.logger.info('Updating event', { taskId: task.id, calendarId: mappedCalendarId, eventId: taskMapping.externalId });
     externalEvent = await client.updateEvent(mappedCalendarId, taskMapping.externalId, payload);
@@ -166,11 +180,7 @@ export async function syncTaskToGoogleCalendar(
     localId: task.id,
     externalId: externalEvent.id,
     externalLabel: externalEvent.summary ?? task.description ?? task.id,
-    metadata: {
-      calendarId: externalCalendarId,
-      etag: externalEvent.etag ?? '',
-      updated: externalEvent.updated ?? ''
-    },
+    metadata: buildTaskMappingMetadata(externalCalendarId, externalEvent, getTaskLastUpdateMillis(task)),
     syncStatus: 'SYNCED'
   };
 
@@ -255,12 +265,42 @@ export async function handleGoogleWebhook(
 
   let projectMappings = allProjectMappings;
   if (channelId) {
-    projectMappings = allProjectMappings.filter((mapping) => {
+    const channelProjectMappings = allProjectMappings.filter((mapping) => {
       const metadata = mapping.metadata ?? {};
       const watchChannelId = readMetadataString(metadata, 'watchChannelId')
         || readMetadataString(metadata, 'channelId');
       return watchChannelId === channelId;
     });
+
+    if (channelProjectMappings.length > 0) {
+      projectMappings = channelProjectMappings;
+    } else {
+      const requestedCalendarId = input.calendarId ?? resourceCalendarId;
+      const resourceProjectMappings = requestedCalendarId
+        ? allProjectMappings.filter((mapping) => mapping.externalId === requestedCalendarId)
+        : [];
+      const hasNewerStoredChannel = resourceProjectMappings.some((mapping) => {
+        const metadata = mapping.metadata ?? {};
+        const watchChannelId = readMetadataString(metadata, 'watchChannelId')
+          || readMetadataString(metadata, 'channelId');
+        return !!watchChannelId && watchChannelId !== channelId;
+      });
+
+      if (hasNewerStoredChannel) {
+        context.logger.info('Ignoring stale Google Calendar watch notification', {
+          channelId,
+          resourceCalendarId: requestedCalendarId ?? ''
+        });
+        return {
+          system: SYSTEM,
+          status: 'ignored',
+          syncedCount: 0,
+          details: { reason: 'stale-watch-channel', channelId, resourceCalendarId: requestedCalendarId ?? '' }
+        };
+      }
+
+      projectMappings = [];
+    }
   }
 
   if (projectMappings.length === 0 && input.calendarId) {
@@ -282,7 +322,7 @@ export async function handleGoogleWebhook(
 
   let syncedCount = 0;
   const seenCalendarIds = new Set<string>();
-  const fallbackUpdatedMin = toTimesheetDateTime(new Date(Date.now() - (7 * 24 * 60 * 60 * 1000)));
+  const fallbackUpdatedMin = toTimesheetDateTime(new Date(Date.now() - WEBHOOK_FALLBACK_WINDOW_MS));
   for (const mapping of projectMappings) {
     if (!mapping.externalId || seenCalendarIds.has(mapping.externalId)) {
       continue;
@@ -352,7 +392,10 @@ async function syncCalendar(
         syncStateKey,
         syncToken,
         options.caches,
-        { fallbackUpdatedMin: options.fallbackUpdatedMin }
+        {
+          fallbackUpdatedMin: options.fallbackUpdatedMin,
+          importLockTtlSeconds: options.lockTtlSeconds ? EVENT_IMPORT_LOCK_TTL_SECONDS : undefined
+        }
       );
     } catch (err) {
       // Google returns 400 or 410 when a sync token is invalid/expired. For
@@ -375,7 +418,10 @@ async function syncCalendar(
           syncStateKey,
           undefined,
           options.caches,
-          { fallbackUpdatedMin: options.fallbackUpdatedMin }
+          {
+            fallbackUpdatedMin: options.fallbackUpdatedMin,
+            importLockTtlSeconds: options.lockTtlSeconds ? EVENT_IMPORT_LOCK_TTL_SECONDS : undefined
+          }
         );
       }
       throw err;
@@ -425,7 +471,9 @@ async function fetchAndSyncEvents(
     });
 
     for (const event of response.items ?? []) {
-      const synced = await syncSingleGoogleEvent(context, projectMapping, calendarId, event, caches);
+      const synced = await syncSingleGoogleEvent(context, projectMapping, calendarId, event, caches, {
+        importLockTtlSeconds: options.importLockTtlSeconds
+      });
       if (synced) {
         syncedCount += 1;
       }
@@ -447,7 +495,8 @@ async function syncSingleGoogleEvent(
   projectMapping: MappingRecord,
   calendarId: string,
   event: GoogleCalendarEvent,
-  caches?: SyncBatchCaches
+  caches?: SyncBatchCaches,
+  options: { importLockTtlSeconds?: number } = {}
 ): Promise<boolean> {
   if (!event?.id) {
     return false;
@@ -481,13 +530,54 @@ async function syncSingleGoogleEvent(
       return false;
     }
 
-    const created = await context.data.createTask({
-      projectId: projectMapping.localId,
-      startDateTime: dateRange.startDateTime,
-      endDateTime: dateRange.endDateTime,
-      description: event.description ?? '',
-      location: event.location
-    } as TaskCreateInput);
+    let importLockKey: string | undefined;
+    if (options.importLockTtlSeconds && options.importLockTtlSeconds > 0) {
+      importLockKey = getEventImportLockStateKey(calendarId, event);
+      try {
+        const lockOptions = { ttlSeconds: options.importLockTtlSeconds, ifAbsent: true };
+        await context.state.set(importLockKey, Date.now(), lockOptions);
+      } catch (err) {
+        if (isStateConflictError(err)) {
+          context.logger.info('Google Calendar event import already in progress, skipping duplicate create', {
+            calendarId,
+            eventId: event.id,
+            updated: event.updated ?? ''
+          });
+          return false;
+        }
+        throw err;
+      }
+    }
+
+    let created;
+    try {
+      created = await context.data.createTask({
+        projectId: projectMapping.localId,
+        startDateTime: dateRange.startDateTime,
+        endDateTime: dateRange.endDateTime,
+        description: getTaskDescriptionFromEvent(event),
+        location: event.location
+      } as TaskCreateInput);
+    } catch (err) {
+      // No task was created — release the lock so a webhook retry can import
+      // the event. Otherwise the retry skips it as a duplicate, the sync token
+      // advances past it, and the event is lost until it is edited again.
+      if (importLockKey) {
+        try {
+          await context.state.delete(importLockKey);
+        } catch (cleanupErr) {
+          context.logger.warn('Failed to release event import lock after create failure', {
+            calendarId,
+            eventId: event.id,
+            error: String(cleanupErr)
+          });
+        }
+      }
+      throw err;
+    }
+    const createdTask = created as TaskDto;
+    const timesheetUpdatedAt = getTaskLastUpdateMillis(createdTask) || Date.now();
+    const metadata = buildTaskMappingMetadata(calendarId, event, timesheetUpdatedAt);
 
     await context.mappings.upsert({
       system: SYSTEM,
@@ -495,22 +585,14 @@ async function syncSingleGoogleEvent(
       localId: created.id,
       externalId: event.id,
       externalLabel: event.summary ?? event.id,
-      metadata: {
-        calendarId,
-        etag: event.etag ?? '',
-        updated: event.updated ?? ''
-      },
+      metadata,
       syncStatus: 'SYNCED'
     });
     putTaskMappingInCaches(caches, {
       localId: created.id,
       externalId: event.id,
       externalLabel: event.summary ?? event.id,
-      metadata: {
-        calendarId,
-        etag: event.etag ?? '',
-        updated: event.updated ?? ''
-      },
+      metadata,
       syncStatus: 'SYNCED'
     });
 
@@ -529,13 +611,16 @@ async function syncSingleGoogleEvent(
     return false;
   }
 
-  await context.data.updateTask(taskMapping.localId, {
+  const updated = await context.data.updateTask(taskMapping.localId, {
     projectId: projectMapping.localId,
     startDateTime: dateRange.startDateTime,
     endDateTime: dateRange.endDateTime,
-    description: event.description ?? '',
+    description: getTaskDescriptionFromEvent(event),
     location: event.location
   } as TaskUpdateInput);
+  const updatedTask = updated as TaskDto | undefined;
+  const timesheetUpdatedAt = getTaskLastUpdateMillis(updatedTask) || Date.now();
+  const metadata = buildTaskMappingMetadata(calendarId, event, timesheetUpdatedAt);
 
   await context.mappings.upsert({
     system: SYSTEM,
@@ -543,22 +628,14 @@ async function syncSingleGoogleEvent(
     localId: taskMapping.localId,
     externalId: event.id,
     externalLabel: event.summary ?? event.id,
-    metadata: {
-      calendarId,
-      etag: event.etag ?? '',
-      updated: event.updated ?? ''
-    },
+    metadata,
     syncStatus: 'SYNCED'
   });
   putTaskMappingInCaches(caches, {
     localId: taskMapping.localId,
     externalId: event.id,
     externalLabel: event.summary ?? event.id,
-    metadata: {
-      calendarId,
-      etag: event.etag ?? '',
-      updated: event.updated ?? ''
-    },
+    metadata,
     syncStatus: 'SYNCED'
   });
 
@@ -711,12 +788,71 @@ function getMappedCalendarId(mapping: MappingRecord): string | undefined {
   return readMetadataString(metadata, 'calendarId');
 }
 
+function buildTaskMappingMetadata(
+  calendarId: string,
+  event: GoogleCalendarEvent,
+  timesheetUpdatedAt?: number
+): Record<string, string> {
+  return {
+    calendarId,
+    etag: event.etag ?? '',
+    updated: event.updated ?? '',
+    timesheetUpdatedAt: timesheetUpdatedAt && Number.isFinite(timesheetUpdatedAt)
+      ? String(Math.floor(timesheetUpdatedAt))
+      : ''
+  };
+}
+
+function getTaskLastUpdateMillis(task?: Partial<TaskDto> | null): number {
+  const value = task?.lastUpdate;
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+    const date = Date.parse(value);
+    return Number.isFinite(date) ? date : 0;
+  }
+  return 0;
+}
+
+function getTaskDescriptionFromEvent(event: GoogleCalendarEvent): string {
+  // Timesheet-originated events carry the project title in the summary and the
+  // task description in the description — mapping the summary back would
+  // overwrite the task description with the project title.
+  if (event.extendedProperties?.private?.timesheetId) {
+    return event.description ?? '';
+  }
+  const summary = event.summary?.trim();
+  if (summary) {
+    return summary;
+  }
+  return event.description ?? '';
+}
+
 function getSyncTokenStateKey(calendarId: string): string {
   return `google-calendar:sync-token:${calendarId}`;
 }
 
 function getSyncLockStateKey(calendarId: string): string {
   return `google-calendar:sync-lock:${calendarId}`;
+}
+
+function getEventImportLockStateKey(calendarId: string, event: GoogleCalendarEvent): string {
+  const version = event.updated ?? event.etag ?? 'unknown';
+  return `google-calendar:event-import:${stableHash(`${calendarId}:${event.id}:${version}`)}`;
+}
+
+function stableHash(value: string): string {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
 }
 
 function createClient(context: IntegrationContext<GoogleCalendarConfig>): GoogleCalendarClient {
@@ -967,6 +1103,18 @@ function readMetadataString(metadata: Record<string, unknown>, key: string): str
     return value;
   }
   return undefined;
+}
+
+function readMetadataNumber(metadata: Record<string, unknown>, key: string): number {
+  const value = metadata[key];
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string' && value.trim().length > 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
 }
 
 function readWatchExpiration(metadata: Record<string, unknown>): number {

@@ -115,7 +115,7 @@ describe('quickbooks plugin', () => {
   });
 
   it('imports webhook time-activity updates into Timesheet tasks', async () => {
-    const createTask = jest.fn().mockResolvedValue({ id: 'task-created' });
+    const createTask = jest.fn().mockResolvedValue({ id: 'task-created', lastUpdate: 1771600000000 });
     const upsert = jest.fn();
 
     const context = {
@@ -210,8 +210,261 @@ describe('quickbooks plugin', () => {
     }));
     expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
       entity: 'task',
-      externalId: 'ta-1'
+      externalId: 'ta-1',
+      metadata: expect.objectContaining({
+        quickBooksUpdatedAt: String(Date.parse('2026-02-20T12:00:00Z')),
+        timesheetUpdatedAt: '1771600000000'
+      })
     }));
+    expect(context.state.set).toHaveBeenCalledWith(
+      expect.stringMatching(/^quickbooks:time-activity-import:/),
+      expect.any(Number),
+      { ttlSeconds: 3600, ifAbsent: true }
+    );
+  });
+
+  it('uses a shared import lock to avoid duplicate Timesheet tasks from repeated QuickBooks webhooks', async () => {
+    const createTask = jest.fn();
+    const stateSet = jest.fn().mockRejectedValue(new Error('Timesheet API request failed (409) PUT /state: StateConflict'));
+
+    const context = {
+      userId: 'user-1',
+      installationId: 'installation-1',
+      config: {},
+      data: {
+        createTask,
+        getTask: jest.fn(),
+        updateTask: jest.fn(),
+        deleteTask: jest.fn()
+      },
+      credentials: {
+        getAccessToken: jest.fn().mockResolvedValue('token'),
+        refreshToken: jest.fn().mockResolvedValue('token-2'),
+        getConnectionInfo: jest.fn().mockResolvedValue({ connected: true, provider: 'quickbooks', accountId: 'realm-1' })
+      },
+      mappings: {
+        list: jest
+          .fn()
+          .mockResolvedValueOnce([{ localId: 'project-1', externalId: 'customer-1', syncStatus: 'SYNCED' }])
+          .mockResolvedValueOnce([{ localId: 'user-1', externalId: 'employee-1', syncStatus: 'SYNCED' }])
+          .mockResolvedValueOnce([]),
+        findByExternal: jest.fn().mockResolvedValue(null),
+        upsert: jest.fn(),
+        get: jest.fn(),
+        delete: jest.fn()
+      },
+      state: {
+        get: jest.fn(),
+        set: stateSet,
+        delete: jest.fn()
+      },
+      logger: {
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn()
+      }
+    } as unknown as IntegrationContext;
+
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: { forEach: () => {} },
+      json: async () => ({
+        QueryResponse: {
+          TimeActivity: [
+            {
+              Id: 'ta-1',
+              Description: 'Imported from QB',
+              CustomerRef: { value: 'customer-1' },
+              EmployeeRef: { value: 'employee-1' },
+              StartTime: '2026-02-20T10:00:00Z',
+              EndTime: '2026-02-20T11:00:00Z',
+              BillableStatus: 'Billable',
+              MetaData: { LastUpdatedTime: '2026-02-20T12:00:00Z' }
+            }
+          ]
+        }
+      }),
+      text: async () => '{}'
+    });
+
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock as typeof fetch;
+
+    const result = await handleWebhook({
+      verified: true,
+      realmId: 'realm-1',
+      body: [
+        {
+          specversion: '1.0',
+          id: '88cd52aa-33b6-4351-9aa4-47572edbd068',
+          type: 'qbo.timeactivity.updated.v1',
+          time: '2026-02-20T12:00:00Z',
+          intuitentityid: 'ta-1',
+          intuitaccountid: 'realm-1'
+        }
+      ]
+    }, context);
+
+    expect(result.status).toBe('completed');
+    expect(result.syncedCount).toBe(0);
+    expect(createTask).not.toHaveBeenCalled();
+    expect(stateSet).toHaveBeenCalledWith(
+      expect.stringMatching(/^quickbooks:time-activity-import:/),
+      expect.any(Number),
+      { ttlSeconds: 3600, ifAbsent: true }
+    );
+  });
+
+  it('skips echoing a task change that was just imported from QuickBooks', async () => {
+    const upsert = jest.fn();
+    const context = {
+      userId: 'user-1',
+      installationId: 'installation-1',
+      config: {},
+      data: {
+        getTask: jest.fn().mockResolvedValue(baseTask)
+      },
+      credentials: {
+        getAccessToken: jest.fn().mockResolvedValue('token'),
+        refreshToken: jest.fn().mockResolvedValue('token-2'),
+        getConnectionInfo: jest.fn().mockResolvedValue({ connected: true, provider: 'quickbooks', accountId: 'realm-1' })
+      },
+      mappings: {
+        get: jest
+          .fn()
+          .mockResolvedValueOnce({ localId: 'project-1', externalId: 'customer-1', syncStatus: 'SYNCED' })
+          .mockResolvedValueOnce({ localId: 'user-1', externalId: 'employee-1', syncStatus: 'SYNCED' })
+          .mockResolvedValueOnce({
+            localId: 'task-1',
+            externalId: 'ta-1',
+            syncStatus: 'SYNCED',
+            metadata: {
+              timesheetUpdatedAt: String(baseTask.lastUpdate)
+            }
+          }),
+        delete: jest.fn(),
+        findByExternal: jest.fn(),
+        list: jest.fn(),
+        upsert
+      },
+      state: {
+        get: jest.fn(),
+        set: jest.fn(),
+        delete: jest.fn()
+      },
+      logger: {
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn()
+      }
+    } as unknown as IntegrationContext;
+
+    const fetchMock = jest.fn();
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock as typeof fetch;
+
+    const result = await syncTaskToExternal({ taskId: 'task-1' }, context);
+
+    expect(result.status).toBe('skipped');
+    expect(result.details).toEqual(expect.objectContaining({ reason: 'already-synced-task-change' }));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it('skips webhook echoes for QuickBooks changes already written by Timesheet', async () => {
+    const updateTask = jest.fn();
+    const context = {
+      userId: 'user-1',
+      installationId: 'installation-1',
+      config: {},
+      data: {
+        createTask: jest.fn(),
+        getTask: jest.fn(),
+        updateTask,
+        deleteTask: jest.fn()
+      },
+      credentials: {
+        getAccessToken: jest.fn().mockResolvedValue('token'),
+        refreshToken: jest.fn().mockResolvedValue('token-2'),
+        getConnectionInfo: jest.fn().mockResolvedValue({ connected: true, provider: 'quickbooks', accountId: 'realm-1' })
+      },
+      mappings: {
+        list: jest
+          .fn()
+          .mockResolvedValueOnce([{ localId: 'project-1', externalId: 'customer-1', syncStatus: 'SYNCED' }])
+          .mockResolvedValueOnce([{ localId: 'user-1', externalId: 'employee-1', syncStatus: 'SYNCED' }])
+          .mockResolvedValueOnce([]),
+        findByExternal: jest.fn().mockResolvedValue({
+          localId: 'task-1',
+          externalId: 'ta-1',
+          syncStatus: 'SYNCED',
+          metadata: {
+            quickBooksUpdatedAt: String(Date.parse('2026-02-20T12:00:00Z'))
+          }
+        }),
+        upsert: jest.fn(),
+        get: jest.fn(),
+        delete: jest.fn()
+      },
+      state: {
+        get: jest.fn(),
+        set: jest.fn(),
+        delete: jest.fn()
+      },
+      logger: {
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn()
+      }
+    } as unknown as IntegrationContext;
+
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: { forEach: () => {} },
+      json: async () => ({
+        QueryResponse: {
+          TimeActivity: [
+            {
+              Id: 'ta-1',
+              Description: 'Echo from QB',
+              CustomerRef: { value: 'customer-1' },
+              EmployeeRef: { value: 'employee-1' },
+              StartTime: '2026-02-20T10:00:00Z',
+              EndTime: '2026-02-20T11:00:00Z',
+              BillableStatus: 'Billable',
+              MetaData: { LastUpdatedTime: '2026-02-20T12:00:00Z' }
+            }
+          ]
+        }
+      }),
+      text: async () => '{}'
+    });
+
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock as typeof fetch;
+
+    const result = await handleWebhook({
+      verified: true,
+      realmId: 'realm-1',
+      body: [
+        {
+          specversion: '1.0',
+          id: '88cd52aa-33b6-4351-9aa4-47572edbd068',
+          type: 'qbo.timeactivity.updated.v1',
+          time: '2026-02-20T12:00:00Z',
+          intuitentityid: 'ta-1',
+          intuitaccountid: 'realm-1'
+        }
+      ]
+    }, context);
+
+    expect(result.status).toBe('completed');
+    expect(result.syncedCount).toBe(0);
+    expect(updateTask).not.toHaveBeenCalled();
   });
 
   const ratedTask: TaskDto = {

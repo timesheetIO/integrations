@@ -20,6 +20,7 @@ const USER_ENTITY = 'user';
 const TASK_ENTITY = 'task';
 const RATE_ENTITY = 'rate';
 const SYNC_STATE_KEY = 'quickbooks:last-sync-time';
+const TIME_ACTIVITY_IMPORT_LOCK_TTL_SECONDS = 60 * 60;
 
 export interface QuickBooksSyncResult {
   system: string;
@@ -92,6 +93,19 @@ export async function syncTaskToQuickBooks(
   const client = await getOrCreateClient(context, input?.realmId);
   const taskMapping = await getMapping(context, caches?.taskMappingByLocalId, TASK_ENTITY, task.id);
 
+  if (!task.deleted && taskMapping?.externalId) {
+    const mappedTaskUpdatedAt = readMetadataNumber(taskMapping.metadata ?? {}, 'timesheetUpdatedAt');
+    const taskUpdatedAt = getTaskLastUpdateMillis(task);
+    if (mappedTaskUpdatedAt > 0 && taskUpdatedAt > 0 && taskUpdatedAt <= mappedTaskUpdatedAt) {
+      return {
+        system: SYSTEM,
+        status: 'skipped',
+        syncedCount: 0,
+        details: { reason: 'already-synced-task-change', taskId: task.id }
+      };
+    }
+  }
+
   if (task.deleted) {
     if (taskMapping?.externalId) {
       const existing = await client.getTimeActivity(taskMapping.externalId);
@@ -150,13 +164,16 @@ export async function syncTaskToQuickBooks(
     localId: task.id,
     externalId: external.Id,
     externalLabel: task.description ?? task.id,
-    metadata: {
+    metadata: buildTaskMappingMetadata({
       customerId: projectMapping.externalId,
       employeeId: userMapping.externalId,
-      ...(rateMapping?.externalId ? { itemId: rateMapping.externalId } : {}),
-      syncToken: external.SyncToken ?? '',
-      txnDate: external.TxnDate ?? ''
-    },
+      itemId: rateMapping?.externalId,
+      syncToken: external.SyncToken,
+      txnDate: external.TxnDate,
+      quickBooksUpdatedAt: getExternalUpdatedAt(external)
+        || readMetadataNumber(taskMapping?.metadata ?? {}, 'quickBooksUpdatedAt'),
+      timesheetUpdatedAt: getTaskLastUpdateMillis(task)
+    }),
     syncStatus: 'SYNCED'
   };
 
@@ -492,16 +509,55 @@ async function syncSingleExternalActivity(
   });
 
   if (!taskMapping?.localId) {
-    const created = await context.data.createTask({
-      projectId: localProjectId,
-      userId: localUserId,
-      startDateTime: dateRange.startDateTime,
-      endDateTime: dateRange.endDateTime,
-      description: activity.Description ?? '',
-      billable: isBillable(activity.BillableStatus),
-      billed: isBilled(activity.BillableStatus),
-      ...(localRateId ? { rateId: localRateId } : {})
-    } as TaskCreateInput);
+    const importLockKey = getTimeActivityImportLockStateKey(activity);
+    try {
+      const lockOptions = { ttlSeconds: TIME_ACTIVITY_IMPORT_LOCK_TTL_SECONDS, ifAbsent: true };
+      await context.state.set(importLockKey, Date.now(), lockOptions);
+    } catch (err) {
+      if (isStateConflictError(err)) {
+        context.logger.info('QuickBooks time activity import already in progress, skipping duplicate create', {
+          timeActivityId: activity.Id,
+          updated: getExternalUpdatedAt(activity)
+        });
+        return false;
+      }
+      throw err;
+    }
+
+    let created;
+    try {
+      created = await context.data.createTask({
+        projectId: localProjectId,
+        userId: localUserId,
+        startDateTime: dateRange.startDateTime,
+        endDateTime: dateRange.endDateTime,
+        description: activity.Description ?? '',
+        billable: isBillable(activity.BillableStatus),
+        billed: isBilled(activity.BillableStatus),
+        ...(localRateId ? { rateId: localRateId } : {})
+      } as TaskCreateInput);
+    } catch (err) {
+      // No task was created — release the lock so the retry can import the
+      // activity. Otherwise the retry skips it as a duplicate and the sync
+      // cursor advances past it, losing the activity until it is edited again.
+      try {
+        await context.state.delete(importLockKey);
+      } catch (cleanupErr) {
+        context.logger.warn('Failed to release time activity import lock after create failure', {
+          timeActivityId: activity.Id,
+          error: String(cleanupErr)
+        });
+      }
+      throw err;
+    }
+    const createdTask = created as TaskDto;
+    const metadata = buildTaskMappingMetadata({
+      customerId: externalProjectId,
+      employeeId: externalUserId,
+      syncToken: activity.SyncToken,
+      quickBooksUpdatedAt: getExternalUpdatedAt(activity),
+      timesheetUpdatedAt: getTaskLastUpdateMillis(createdTask) || Date.now()
+    });
 
     await context.mappings.upsert({
       system: SYSTEM,
@@ -509,24 +565,25 @@ async function syncSingleExternalActivity(
       localId: created.id,
       externalId: activity.Id,
       externalLabel: activity.Description ?? activity.Id,
-      metadata: {
-        customerId: externalProjectId,
-        employeeId: externalUserId,
-        syncToken: activity.SyncToken ?? ''
-      },
+      metadata,
       syncStatus: 'SYNCED'
     });
 
     return true;
   }
 
-  const existing = await context.data.getTask(taskMapping.localId);
   const externalUpdatedAt = getExternalUpdatedAt(activity);
+  const mappedExternalUpdatedAt = readMetadataNumber(taskMapping.metadata ?? {}, 'quickBooksUpdatedAt');
+  if (externalUpdatedAt > 0 && mappedExternalUpdatedAt > 0 && externalUpdatedAt <= mappedExternalUpdatedAt) {
+    return false;
+  }
+
+  const existing = await context.data.getTask(taskMapping.localId);
   if (existing?.lastUpdate && externalUpdatedAt > 0 && externalUpdatedAt <= existing.lastUpdate) {
     return false;
   }
 
-  await context.data.updateTask(taskMapping.localId, {
+  const updated = await context.data.updateTask(taskMapping.localId, {
     projectId: localProjectId,
     startDateTime: dateRange.startDateTime,
     endDateTime: dateRange.endDateTime,
@@ -535,6 +592,14 @@ async function syncSingleExternalActivity(
     billed: isBilled(activity.BillableStatus),
     ...(localRateId ? { rateId: localRateId } : {})
   } as TaskUpdateInput);
+  const updatedTask = updated as TaskDto | undefined;
+  const metadata = buildTaskMappingMetadata({
+    customerId: externalProjectId,
+    employeeId: externalUserId,
+    syncToken: activity.SyncToken,
+    quickBooksUpdatedAt: externalUpdatedAt,
+    timesheetUpdatedAt: getTaskLastUpdateMillis(updatedTask) || Date.now()
+  });
 
   await context.mappings.upsert({
     system: SYSTEM,
@@ -542,11 +607,7 @@ async function syncSingleExternalActivity(
     localId: taskMapping.localId,
     externalId: activity.Id,
     externalLabel: activity.Description ?? activity.Id,
-    metadata: {
-      customerId: externalProjectId,
-      employeeId: externalUserId,
-      syncToken: activity.SyncToken ?? ''
-    },
+    metadata,
     syncStatus: 'SYNCED'
   });
 
@@ -782,6 +843,62 @@ function getExternalUpdatedAt(activity: QuickBooksTimeActivity): number {
     || activity.MetaData?.CreateTime;
   const parsed = value ? Date.parse(value) : NaN;
   return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function buildTaskMappingMetadata(input: {
+  customerId: string;
+  employeeId: string;
+  itemId?: string;
+  syncToken?: string;
+  txnDate?: string;
+  quickBooksUpdatedAt?: number;
+  timesheetUpdatedAt?: number;
+}): Record<string, string> {
+  return {
+    customerId: input.customerId,
+    employeeId: input.employeeId,
+    ...(input.itemId ? { itemId: input.itemId } : {}),
+    syncToken: input.syncToken ?? '',
+    ...(input.txnDate ? { txnDate: input.txnDate } : {}),
+    ...(input.quickBooksUpdatedAt && Number.isFinite(input.quickBooksUpdatedAt)
+      ? { quickBooksUpdatedAt: String(Math.floor(input.quickBooksUpdatedAt)) }
+      : {}),
+    ...(input.timesheetUpdatedAt && Number.isFinite(input.timesheetUpdatedAt)
+      ? { timesheetUpdatedAt: String(Math.floor(input.timesheetUpdatedAt)) }
+      : {})
+  };
+}
+
+function getTaskLastUpdateMillis(task?: Partial<TaskDto> | null): number {
+  const value = Number(task?.lastUpdate);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function readMetadataNumber(metadata: Record<string, unknown>, key: string): number {
+  const raw = metadata[key];
+  const value = typeof raw === 'number' ? raw : Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function isStateConflictError(err: unknown): boolean {
+  const message = String(err);
+  return message.includes('Timesheet API request failed (409)')
+    || message.includes('StateConflict')
+    || message.includes('State key already exists');
+}
+
+function getTimeActivityImportLockStateKey(activity: QuickBooksTimeActivity): string {
+  const version = getExternalUpdatedAt(activity) || activity.SyncToken || 'unknown';
+  return `quickbooks:time-activity-import:${stableHash(`${activity.Id}:${version}`)}`;
+}
+
+function stableHash(value: string): string {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
 }
 
 function parseTimeActivityEvent(event: QuickBooksCloudEvent | undefined): EntityChange | null {
