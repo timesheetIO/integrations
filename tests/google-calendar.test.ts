@@ -1,6 +1,7 @@
 import { IntegrationContext, TaskDto } from '@timesheet/integration-sdk';
 import { runFullSync } from '../google-calendar/src/handlers/runFullSync';
 import { syncTaskToExternal } from '../google-calendar/src/handlers/syncTaskToExternal';
+import { handleGoogleWebhook } from '../google-calendar/src/lib/taskSync';
 
 describe('google-calendar plugin', () => {
   const baseTask: TaskDto = {
@@ -260,5 +261,137 @@ describe('google-calendar plugin', () => {
     expect(result.syncedCount).toBe(0);
     expect(getTask).not.toHaveBeenCalled();
     expect(updateTask).not.toHaveBeenCalled();
+  });
+
+  it('routes stale-channel webhooks by resource URI and uses a recent update window', async () => {
+    const createTask = jest.fn().mockResolvedValue({ id: 'task-created' });
+    const stateSet = jest.fn();
+
+    const context = {
+      userId: 'user-1',
+      installationId: 'installation-1',
+      config: {},
+      data: {
+        createTask,
+        getTask: jest.fn(),
+        updateTask: jest.fn(),
+        deleteTask: jest.fn()
+      },
+      credentials: {
+        getAccessToken: jest.fn().mockResolvedValue('token'),
+        refreshToken: jest.fn().mockResolvedValue('token-2')
+      },
+      mappings: {
+        list: jest.fn().mockResolvedValue([{ localId: 'project-1', externalId: 'calendar-1', syncStatus: 'SYNCED' }]),
+        findByExternal: jest.fn().mockResolvedValue(null),
+        upsert: jest.fn(),
+        get: jest.fn(),
+        delete: jest.fn()
+      },
+      state: {
+        get: jest.fn().mockResolvedValue(null),
+        set: stateSet,
+        delete: jest.fn()
+      },
+      logger: {
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn()
+      }
+    } as unknown as IntegrationContext;
+
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: { forEach: () => {} },
+      json: async () => ({
+        items: [
+          {
+            id: 'event-1',
+            summary: 'Imported',
+            description: 'Created in Google',
+            start: { dateTime: '2026-02-20T10:00:00Z' },
+            end: { dateTime: '2026-02-20T11:00:00Z' },
+            updated: '2026-02-20T11:10:00Z'
+          }
+        ],
+        nextSyncToken: 'next-token'
+      }),
+      text: async () => '{}'
+    });
+
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock as typeof fetch;
+
+    const result = await handleGoogleWebhook({
+      headers: {
+        'x-goog-channel-id': 'stale-channel',
+        'x-goog-resource-uri': 'https://www.googleapis.com/calendar/v3/calendars/calendar-1/events?alt=json'
+      }
+    }, context);
+
+    const requestedUrl = new URL(String(fetchMock.mock.calls[0][0]));
+    expect(result.syncedCount).toBe(1);
+    expect(createTask).toHaveBeenCalled();
+    expect(requestedUrl.searchParams.has('updatedMin')).toBe(true);
+    expect(requestedUrl.searchParams.has('timeMin')).toBe(false);
+    expect(stateSet).toHaveBeenCalledWith('google-calendar:sync-token:calendar-1', 'next-token');
+  });
+
+  it('skips duplicate webhook delivery while a calendar sync lock is active', async () => {
+    const fetchMock = jest.fn();
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock as unknown as typeof fetch;
+
+    const context = {
+      userId: 'user-1',
+      installationId: 'installation-1',
+      config: {},
+      data: {
+        createTask: jest.fn(),
+        getTask: jest.fn(),
+        updateTask: jest.fn(),
+        deleteTask: jest.fn()
+      },
+      credentials: {
+        getAccessToken: jest.fn().mockResolvedValue('token'),
+        refreshToken: jest.fn().mockResolvedValue('token-2')
+      },
+      mappings: {
+        list: jest.fn().mockResolvedValue([
+          {
+            localId: 'project-1',
+            externalId: 'calendar-1',
+            syncStatus: 'SYNCED',
+            metadata: { watchChannelId: 'active-channel' }
+          }
+        ]),
+        findByExternal: jest.fn(),
+        upsert: jest.fn(),
+        get: jest.fn(),
+        delete: jest.fn()
+      },
+      state: {
+        get: jest.fn().mockResolvedValue(Date.now()),
+        set: jest.fn(),
+        delete: jest.fn()
+      },
+      logger: {
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn()
+      }
+    } as unknown as IntegrationContext;
+
+    const result = await handleGoogleWebhook({
+      headers: {
+        'x-goog-channel-id': 'active-channel',
+        'x-goog-resource-uri': 'https://www.googleapis.com/calendar/v3/calendars/calendar-1/events?alt=json'
+      }
+    }, context);
+
+    expect(result.syncedCount).toBe(0);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

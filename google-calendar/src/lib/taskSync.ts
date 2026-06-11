@@ -31,6 +31,16 @@ export interface SyncBatchCaches {
   projectById?: Map<string, ProjectDto>;
 }
 
+interface SyncCalendarOptions {
+  caches?: SyncBatchCaches;
+  fallbackUpdatedMin?: string;
+  lockTtlSeconds?: number;
+}
+
+interface FetchAndSyncOptions {
+  fallbackUpdatedMin?: string;
+}
+
 // Shared client instance for batch execution — avoids re-fetching the access token per change.
 let sharedClient: GoogleCalendarClient | null = null;
 
@@ -195,7 +205,7 @@ export async function runGoogleCalendarFullSync(
         continue;
       }
 
-      const perCalendarCount = await syncCalendar(context, mapping, caches);
+      const perCalendarCount = await syncCalendar(context, mapping, { caches });
       syncedCount += perCalendarCount;
     }
   }
@@ -228,6 +238,8 @@ export async function handleGoogleWebhook(
   }
 
   const channelId = getHeader(input, 'x-goog-channel-id');
+  const resourceUri = getHeader(input, 'x-goog-resource-uri');
+  const resourceCalendarId = extractCalendarIdFromResourceUri(resourceUri);
   const allProjectMappings = await context.mappings.list({ system: SYSTEM, entity: PROJECT_ENTITY });
   const caches = buildMappingCaches(allProjectMappings);
 
@@ -245,6 +257,10 @@ export async function handleGoogleWebhook(
     projectMappings = allProjectMappings.filter((mapping) => mapping.externalId === input.calendarId);
   }
 
+  if (projectMappings.length === 0 && resourceCalendarId) {
+    projectMappings = allProjectMappings.filter((mapping) => mapping.externalId === resourceCalendarId);
+  }
+
   if (projectMappings.length === 0) {
     return {
       system: SYSTEM,
@@ -255,8 +271,18 @@ export async function handleGoogleWebhook(
   }
 
   let syncedCount = 0;
+  const seenCalendarIds = new Set<string>();
+  const fallbackUpdatedMin = toTimesheetDateTime(new Date(Date.now() - (7 * 24 * 60 * 60 * 1000)));
   for (const mapping of projectMappings) {
-    syncedCount += await syncCalendar(context, mapping, caches);
+    if (!mapping.externalId || seenCalendarIds.has(mapping.externalId)) {
+      continue;
+    }
+    seenCalendarIds.add(mapping.externalId);
+    syncedCount += await syncCalendar(context, mapping, {
+      caches,
+      fallbackUpdatedMin,
+      lockTtlSeconds: 15 * 60
+    });
   }
 
   return {
@@ -265,6 +291,7 @@ export async function handleGoogleWebhook(
     syncedCount,
     details: {
       channelId: channelId ?? '',
+      resourceCalendarId: resourceCalendarId ?? '',
       mappedCalendars: projectMappings.length
     }
   };
@@ -273,7 +300,7 @@ export async function handleGoogleWebhook(
 async function syncCalendar(
   context: IntegrationContext<GoogleCalendarConfig>,
   projectMapping: MappingRecord,
-  caches?: SyncBatchCaches
+  options: SyncCalendarOptions = {}
 ): Promise<number> {
   if (!projectMapping.externalId) {
     return 0;
@@ -281,25 +308,74 @@ async function syncCalendar(
 
   const client = createClient(context);
   const calendarId = projectMapping.externalId;
-  const syncStateKey = getSyncTokenStateKey(calendarId);
-  const metadataSyncToken = readMetadataString(projectMapping.metadata ?? {}, 'syncToken');
-
-  let syncToken = (await context.state.get<string>(syncStateKey)) ?? undefined;
-  if (!syncToken && metadataSyncToken) {
-    syncToken = metadataSyncToken;
+  const lockKey = getSyncLockStateKey(calendarId);
+  if (options.lockTtlSeconds && options.lockTtlSeconds > 0) {
+    const existingLock = await context.state.get<number | string>(lockKey);
+    const existingLockMillis = Number(existingLock);
+    if (Number.isFinite(existingLockMillis) && Date.now() - existingLockMillis < options.lockTtlSeconds * 1000) {
+      context.logger.info('Calendar sync already in progress, skipping duplicate webhook', {
+        calendarId,
+        lockAgeMs: Date.now() - existingLockMillis
+      });
+      return 0;
+    }
+    await context.state.set(lockKey, Date.now(), { ttlSeconds: options.lockTtlSeconds });
   }
 
+  const syncStateKey = getSyncTokenStateKey(calendarId);
   try {
-    return await fetchAndSyncEvents(context, client, projectMapping, calendarId, syncStateKey, syncToken, caches);
-  } catch (err) {
-    // Google returns 400 or 410 when a sync token is invalid/expired — clear it and do a full resync
-    const errMsg = String(err);
-    if (syncToken && (errMsg.includes('(410)') || errMsg.includes('Invalid sync token'))) {
-      context.logger.warn('Sync token expired, performing full resync', { calendarId });
-      await context.state.delete(syncStateKey);
-      return await fetchAndSyncEvents(context, client, projectMapping, calendarId, syncStateKey, undefined, caches);
+    const metadataSyncToken = readMetadataString(projectMapping.metadata ?? {}, 'syncToken');
+
+    let syncToken = (await context.state.get<string>(syncStateKey)) ?? undefined;
+    if (!syncToken && metadataSyncToken) {
+      syncToken = metadataSyncToken;
     }
-    throw err;
+
+    try {
+      return await fetchAndSyncEvents(
+        context,
+        client,
+        projectMapping,
+        calendarId,
+        syncStateKey,
+        syncToken,
+        options.caches,
+        { fallbackUpdatedMin: options.fallbackUpdatedMin }
+      );
+    } catch (err) {
+      // Google returns 400 or 410 when a sync token is invalid/expired. For
+      // webhook delivery, avoid a heavy one-year resync and fetch recently
+      // updated events only; scheduled/manual sync can still do the full repair.
+      const errMsg = String(err);
+      if (syncToken && (errMsg.includes('(410)') || errMsg.includes('Invalid sync token'))) {
+        context.logger.warn(
+          options.fallbackUpdatedMin
+            ? 'Sync token expired, performing recent webhook resync'
+            : 'Sync token expired, performing full resync',
+          { calendarId, fallbackUpdatedMin: options.fallbackUpdatedMin ?? '' }
+        );
+        await context.state.delete(syncStateKey);
+        return await fetchAndSyncEvents(
+          context,
+          client,
+          projectMapping,
+          calendarId,
+          syncStateKey,
+          undefined,
+          options.caches,
+          { fallbackUpdatedMin: options.fallbackUpdatedMin }
+        );
+      }
+      throw err;
+    }
+  } finally {
+    if (options.lockTtlSeconds && options.lockTtlSeconds > 0) {
+      try {
+        await context.state.delete(lockKey);
+      } catch (err) {
+        context.logger.warn('Failed to clear calendar sync lock', { calendarId, error: String(err) });
+      }
+    }
   }
 }
 
@@ -310,7 +386,8 @@ async function fetchAndSyncEvents(
   calendarId: string,
   syncStateKey: string,
   syncToken: string | undefined,
-  caches?: SyncBatchCaches
+  caches?: SyncBatchCaches,
+  options: FetchAndSyncOptions = {}
 ): Promise<number> {
   let pageToken: string | undefined;
   let nextSyncToken: string | undefined;
@@ -322,7 +399,10 @@ async function fetchAndSyncEvents(
       singleEvents: true,
       syncToken,
       pageToken,
-      timeMin: !syncToken ? new Date(Date.now() - (365 * 24 * 60 * 60 * 1000)).toISOString() : undefined
+      timeMin: !syncToken && !options.fallbackUpdatedMin
+        ? new Date(Date.now() - (365 * 24 * 60 * 60 * 1000)).toISOString()
+        : undefined,
+      updatedMin: !syncToken ? options.fallbackUpdatedMin : undefined
     });
 
     for (const event of response.items ?? []) {
@@ -616,6 +696,10 @@ function getSyncTokenStateKey(calendarId: string): string {
   return `google-calendar:sync-token:${calendarId}`;
 }
 
+function getSyncLockStateKey(calendarId: string): string {
+  return `google-calendar:sync-lock:${calendarId}`;
+}
+
 function createClient(context: IntegrationContext<GoogleCalendarConfig>): GoogleCalendarClient {
   return new GoogleCalendarClient({
     getAccessToken: () => context.credentials.getAccessToken('google'),
@@ -703,6 +787,21 @@ function getHeader(input: GoogleCalendarSyncInput, name: string): string | undef
   return value === undefined || value === null ? undefined : String(value);
 }
 
+function extractCalendarIdFromResourceUri(resourceUri: string | undefined): string | undefined {
+  if (!resourceUri) {
+    return undefined;
+  }
+
+  try {
+    const url = new URL(resourceUri);
+    const match = url.pathname.match(/\/calendars\/([^/]+)\/events(?:\/|$)/);
+    return match?.[1] ? decodeURIComponent(match[1]) : undefined;
+  } catch {
+    const match = resourceUri.match(/\/calendars\/([^/]+)\/events(?:[/?#]|$)/);
+    return match?.[1] ? decodeURIComponent(match[1]) : undefined;
+  }
+}
+
 export async function ensureWatchChannels(
   context: IntegrationContext<GoogleCalendarConfig>
 ): Promise<void> {
@@ -726,12 +825,26 @@ export async function ensureWatchChannels(
   // runs to catch the renewal before the 7-day TTL runs out.
   const renewWindowMs = 48 * 60 * 60 * 1000;
 
+  const mappingsByCalendarId = new Map<string, MappingRecord[]>();
   for (const mapping of projectMappings) {
-    if (!mapping.externalId) {
-      continue;
+    if (mapping.externalId) {
+      const mappings = mappingsByCalendarId.get(mapping.externalId) ?? [];
+      mappings.push(mapping);
+      mappingsByCalendarId.set(mapping.externalId, mappings);
+    }
+  }
+
+  for (const mappings of mappingsByCalendarId.values()) {
+    const sortedMappings = [...mappings].sort((left, right) =>
+      readWatchExpiration(right.metadata ?? {}) - readWatchExpiration(left.metadata ?? {})
+    );
+    const mapping = sortedMappings[0];
+    const metadata = mapping.metadata ?? {};
+
+    for (const duplicateMapping of sortedMappings.slice(1)) {
+      await stopDuplicateWatchChannel(context, client, duplicateMapping);
     }
 
-    const metadata = mapping.metadata ?? {};
     const existingExpiration = readMetadataString(metadata, 'watchExpiration');
     if (existingExpiration) {
       const expiresAt = Number(existingExpiration);
@@ -786,6 +899,44 @@ export async function ensureWatchChannels(
   }
 }
 
+async function stopDuplicateWatchChannel(
+  context: IntegrationContext<GoogleCalendarConfig>,
+  client: GoogleCalendarClient,
+  mapping: MappingRecord
+): Promise<void> {
+  const metadata = mapping.metadata ?? {};
+  const oldChannelId = readMetadataString(metadata, 'watchChannelId');
+  const oldResourceId = readMetadataString(metadata, 'watchResourceId');
+  if (!oldChannelId || !oldResourceId) {
+    return;
+  }
+
+  try {
+    await client.stopWatch(oldChannelId, oldResourceId);
+  } catch (err) {
+    context.logger.warn('Failed to stop duplicate watch channel', {
+      calendarId: mapping.externalId,
+      error: String(err)
+    });
+    return;
+  }
+
+  const updatedMetadata = { ...metadata };
+  delete updatedMetadata.watchChannelId;
+  delete updatedMetadata.watchResourceId;
+  delete updatedMetadata.watchExpiration;
+
+  await context.mappings.upsert({
+    system: SYSTEM,
+    entity: PROJECT_ENTITY,
+    localId: mapping.localId,
+    externalId: mapping.externalId,
+    externalLabel: mapping.externalLabel,
+    metadata: updatedMetadata,
+    syncStatus: 'SYNCED'
+  });
+}
+
 /** Format a Date to the offset format the Timesheet backend expects: yyyy-MM-dd'T'HH:mm:ss+00:00 */
 function toTimesheetDateTime(date: Date): string {
   return date.toISOString().replace(/\.\d{3}Z$/, '+00:00');
@@ -797,4 +948,10 @@ function readMetadataString(metadata: Record<string, unknown>, key: string): str
     return value;
   }
   return undefined;
+}
+
+function readWatchExpiration(metadata: Record<string, unknown>): number {
+  const expiration = readMetadataString(metadata, 'watchExpiration');
+  const value = expiration ? Number(expiration) : 0;
+  return Number.isFinite(value) ? value : 0;
 }
