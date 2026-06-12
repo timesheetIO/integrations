@@ -151,6 +151,7 @@ export async function syncTaskToGoogleCalendar(
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'invalid-task-data', taskId: task.id } };
   }
   let externalEvent: GoogleCalendarEvent;
+  let eventWasCreated = false;
 
   if (taskMapping?.externalId) {
     const mappedTaskUpdatedAt = readMetadataNumber(taskMapping.metadata ?? {}, 'timesheetUpdatedAt');
@@ -170,11 +171,15 @@ export async function syncTaskToGoogleCalendar(
   } else {
     const duplicate = await findEventByTimesheetId(client, externalCalendarId, task.id);
     if (duplicate?.id) {
+      // Relinking a stamped event whose mapping was lost (e.g. reinstall). The
+      // stamp does not prove a Timesheet origin — back-synced imports carry it
+      // too — so the origin stays unknown and updates remain conservative.
       context.logger.info('Found existing event by timesheetId', { taskId: task.id, eventId: duplicate.id });
       externalEvent = duplicate;
     } else {
       context.logger.info('Creating event', { taskId: task.id, calendarId: externalCalendarId, summary: payload.summary });
       externalEvent = await client.createEvent(externalCalendarId, payload);
+      eventWasCreated = true;
       context.logger.info('Created event', { taskId: task.id, eventId: externalEvent?.id });
     }
   }
@@ -191,9 +196,10 @@ export async function syncTaskToGoogleCalendar(
   // Backfill the origin for legacy mappings when provable: Timesheet-created
   // events always carry the timesheetId stamp, so its absence proves the event
   // was created in Google. Presence is ambiguous (old echoes stamped imported
-  // events too), so those stay unknown.
+  // events too), so those stay unknown. Only an event we created right now is
+  // certainly Timesheet-originated — a relinked stamped event is not.
   const mappingOrigin = storedOrigin
-    ?? (taskMapping?.externalId ? inferOriginFromEvent(externalEvent) : ORIGIN_TIMESHEET);
+    ?? (eventWasCreated ? ORIGIN_TIMESHEET : inferOriginFromEvent(externalEvent));
 
   const upsertedMapping: MappingRecord = {
     localId: task.id,
@@ -485,7 +491,7 @@ async function fetchAndSyncEvents(
     });
 
     for (const event of response.items ?? []) {
-      const synced = await syncSingleGoogleEvent(context, projectMapping, calendarId, event, caches, {
+      const synced = await syncSingleGoogleEvent(context, client, projectMapping, calendarId, event, caches, {
         importLockTtlSeconds: options.importLockTtlSeconds
       });
       if (synced) {
@@ -506,6 +512,7 @@ async function fetchAndSyncEvents(
 
 async function syncSingleGoogleEvent(
   context: IntegrationContext<GoogleCalendarConfig>,
+  client: GoogleCalendarClient,
   projectMapping: MappingRecord,
   calendarId: string,
   event: GoogleCalendarEvent,
@@ -589,23 +596,49 @@ async function syncSingleGoogleEvent(
       }
       throw err;
     }
+    // Stamp the event with the task id so a future reinstall (which loses the
+    // mappings) recognizes it as already imported instead of duplicating the
+    // task. PATCH merges the key into the private map without touching any
+    // other field. Best-effort: an import-only calendar may be read-only.
+    let stampedEvent = event;
+    try {
+      const patched = await client.updateEvent(calendarId, event.id, {
+        extendedProperties: {
+          private: {
+            timesheetId: created.id
+          }
+        }
+      });
+      if (patched?.id) {
+        stampedEvent = patched;
+      }
+    } catch (err) {
+      context.logger.warn('Failed to stamp imported event with timesheetId', {
+        calendarId,
+        eventId: event.id,
+        error: String(err)
+      });
+    }
+
     const createdTask = created as TaskDto;
     const timesheetUpdatedAt = getTaskLastUpdateMillis(createdTask) || Date.now();
-    const metadata = buildTaskMappingMetadata(calendarId, event, timesheetUpdatedAt, ORIGIN_GOOGLE);
+    // Metadata comes from the stamped event so the webhook fired by our own
+    // PATCH carries the same `updated` value and self-skips.
+    const metadata = buildTaskMappingMetadata(calendarId, stampedEvent, timesheetUpdatedAt, ORIGIN_GOOGLE);
 
     await context.mappings.upsert({
       system: SYSTEM,
       entity: TASK_ENTITY,
       localId: created.id,
       externalId: event.id,
-      externalLabel: event.summary ?? event.id,
+      externalLabel: stampedEvent.summary ?? event.summary ?? event.id,
       metadata,
       syncStatus: 'SYNCED'
     });
     putTaskMappingInCaches(caches, {
       localId: created.id,
       externalId: event.id,
-      externalLabel: event.summary ?? event.id,
+      externalLabel: stampedEvent.summary ?? event.summary ?? event.id,
       metadata,
       syncStatus: 'SYNCED'
     });

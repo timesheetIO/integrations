@@ -924,6 +924,101 @@ describe('google-calendar plugin', () => {
     expect(body.location).toBe('Berlin');
   });
 
+  it('stamps imported events with the task id and stores the post-stamp metadata', async () => {
+    const createTask = jest.fn().mockResolvedValue({ id: 'task-created', lastUpdate: Date.now() });
+    const upsert = jest.fn();
+
+    const context = {
+      userId: 'user-1',
+      installationId: 'installation-1',
+      config: {},
+      data: {
+        createTask,
+        getTask: jest.fn(),
+        updateTask: jest.fn(),
+        deleteTask: jest.fn()
+      },
+      credentials: {
+        getAccessToken: jest.fn().mockResolvedValue('token'),
+        refreshToken: jest.fn().mockResolvedValue('token-2')
+      },
+      mappings: {
+        list: jest.fn().mockResolvedValue([{ localId: 'project-1', externalId: 'calendar-1', syncStatus: 'SYNCED', metadata: {} }]),
+        findByExternal: jest.fn().mockResolvedValue(null),
+        upsert,
+        get: jest.fn(),
+        delete: jest.fn()
+      },
+      state: {
+        get: jest.fn().mockResolvedValue(null),
+        set: jest.fn(),
+        delete: jest.fn()
+      },
+      logger: {
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn()
+      }
+    } as unknown as IntegrationContext;
+
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { forEach: () => {} },
+        json: async () => ({
+          items: [
+            {
+              id: 'event-1',
+              summary: 'My meeting',
+              start: { dateTime: '2026-02-20T10:00:00Z' },
+              end: { dateTime: '2026-02-20T11:00:00Z' },
+              updated: '2026-02-20T11:10:00Z'
+            }
+          ],
+          nextSyncToken: 'next-token'
+        }),
+        text: async () => '{}'
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { forEach: () => {} },
+        json: async () => ({
+          id: 'event-1',
+          summary: 'My meeting',
+          updated: '2026-02-20T11:12:00Z',
+          extendedProperties: { private: { timesheetId: 'task-created' } }
+        }),
+        text: async () => '{}'
+      });
+
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock as typeof fetch;
+
+    const result = await runFullSync(undefined, context);
+
+    expect(result.syncedCount).toBe(1);
+    expect(createTask).toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [stampUrl, stampInit] = fetchMock.mock.calls[1];
+    expect(String(stampUrl)).toContain('/calendars/calendar-1/events/event-1');
+    expect(stampInit.method).toBe('PATCH');
+    expect(JSON.parse(stampInit.body as string)).toEqual({
+      extendedProperties: { private: { timesheetId: 'task-created' } }
+    });
+    // Metadata reflects the post-stamp event so the webhook caused by the
+    // stamp write compares equal and self-skips.
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
+      localId: 'task-created',
+      externalId: 'event-1',
+      metadata: expect.objectContaining({ origin: 'google', updated: '2026-02-20T11:12:00Z' })
+    }));
+  });
+
   it('reads the event title for a Google-originated mapping even after the event was stamped', async () => {
     const getTask = jest.fn().mockResolvedValue({
       id: 'task-1',
