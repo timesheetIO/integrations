@@ -18,6 +18,11 @@ const PROJECT_ENTITY = 'project';
 const TASK_ENTITY = 'task';
 const WEBHOOK_FALLBACK_WINDOW_MS = 10 * 60 * 1000;
 const EVENT_IMPORT_LOCK_TTL_SECONDS = 60 * 60;
+// Where the mapped event was created. Google-originated events keep their own
+// title (synced with the task description); Timesheet-originated events show
+// the project title. Stored in the task mapping metadata as `origin`.
+const ORIGIN_GOOGLE = 'google';
+const ORIGIN_TIMESHEET = 'timesheet';
 
 export interface GoogleCalendarSyncResult {
   system: string;
@@ -31,6 +36,8 @@ export interface SyncBatchCaches {
   taskMappingByLocalId?: Map<string, MappingRecord>;
   taskMappingByExternalId?: Map<string, MappingRecord>;
   projectById?: Map<string, ProjectDto>;
+  /** True when the task mapping caches hold the complete list — a miss then means no mapping exists. */
+  taskMappingsComplete?: boolean;
 }
 
 interface SyncCalendarOptions {
@@ -131,9 +138,14 @@ export async function syncTaskToGoogleCalendar(
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'already-deleted' } };
   }
 
+  // Events created by Timesheet carry the project title as summary; events
+  // created in Google keep their own title (synced with the task description).
+  const storedOrigin = readMappingOrigin(taskMapping);
+  const payloadOrigin = taskMapping?.externalId ? storedOrigin : ORIGIN_TIMESHEET;
+
   let payload: Record<string, unknown>;
   try {
-    payload = buildGoogleEventPayload(task);
+    payload = buildGoogleEventPayload(task, payloadOrigin);
   } catch (err) {
     context.logger.warn('Failed to build event payload', { taskId: task.id, error: String(err) });
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'invalid-task-data', taskId: task.id } };
@@ -176,11 +188,18 @@ export async function syncTaskToGoogleCalendar(
     };
   }
 
+  // Backfill the origin for legacy mappings when provable: Timesheet-created
+  // events always carry the timesheetId stamp, so its absence proves the event
+  // was created in Google. Presence is ambiguous (old echoes stamped imported
+  // events too), so those stay unknown.
+  const mappingOrigin = storedOrigin
+    ?? (taskMapping?.externalId ? inferOriginFromEvent(externalEvent) : ORIGIN_TIMESHEET);
+
   const upsertedMapping: MappingRecord = {
     localId: task.id,
     externalId: externalEvent.id,
     externalLabel: externalEvent.summary ?? task.description ?? task.id,
-    metadata: buildTaskMappingMetadata(externalCalendarId, externalEvent, getTaskLastUpdateMillis(task)),
+    metadata: buildTaskMappingMetadata(externalCalendarId, externalEvent, getTaskLastUpdateMillis(task), mappingOrigin),
     syncStatus: 'SYNCED'
   };
 
@@ -258,57 +277,52 @@ export async function handleGoogleWebhook(
   }
 
   const channelId = getHeader(input, 'x-goog-channel-id');
+  const resourceId = getHeader(input, 'x-goog-resource-id');
   const resourceUri = getHeader(input, 'x-goog-resource-uri');
   const resourceCalendarId = extractCalendarIdFromResourceUri(resourceUri);
-  const allProjectMappings = await context.mappings.list({ system: SYSTEM, entity: PROJECT_ENTITY });
-  const caches = buildMappingCaches(allProjectMappings);
+  // Preload the complete task mapping list once — the per-event findByExternal
+  // round-trips otherwise dominate the webhook execution time.
+  const [allProjectMappings, allTaskMappings] = await Promise.all([
+    context.mappings.list({ system: SYSTEM, entity: PROJECT_ENTITY }),
+    context.mappings.list({ system: SYSTEM, entity: TASK_ENTITY })
+  ]);
+  const caches = buildMappingCaches(allProjectMappings, allTaskMappings);
+  caches.taskMappingsComplete = true;
 
   let projectMappings = allProjectMappings;
   if (channelId) {
-    const channelProjectMappings = allProjectMappings.filter((mapping) => {
-      const metadata = mapping.metadata ?? {};
-      const watchChannelId = readMetadataString(metadata, 'watchChannelId')
-        || readMetadataString(metadata, 'channelId');
-      return watchChannelId === channelId;
-    });
+    // Resolve the calendar this notification belongs to: the mapping that
+    // stores this channel id, or the calendar named in the notification.
+    const channelMapping = allProjectMappings.find((mapping) => readWatchChannelId(mapping) === channelId);
+    const calendarId = channelMapping?.externalId ?? input.calendarId ?? resourceCalendarId;
+    const calendarMappings = calendarId
+      ? allProjectMappings.filter((mapping) => mapping.externalId === calendarId)
+      : [];
 
-    if (channelProjectMappings.length > 0) {
-      projectMappings = channelProjectMappings;
-    } else {
-      const requestedCalendarId = input.calendarId ?? resourceCalendarId;
-      const resourceProjectMappings = requestedCalendarId
-        ? allProjectMappings.filter((mapping) => mapping.externalId === requestedCalendarId)
-        : [];
-      const hasNewerStoredChannel = resourceProjectMappings.some((mapping) => {
-        const metadata = mapping.metadata ?? {};
-        const watchChannelId = readMetadataString(metadata, 'watchChannelId')
-          || readMetadataString(metadata, 'channelId');
-        return !!watchChannelId && watchChannelId !== channelId;
+    // Exactly one channel per calendar is canonical — the one stored on the
+    // mapping ensureWatchChannels maintains (newest watchExpiration). Several
+    // historical channels on the same calendar each deliver a notification per
+    // change; accepting them all processes every change several times over.
+    const canonicalMapping = [...calendarMappings].sort((left, right) =>
+      readWatchExpiration(right.metadata ?? {}) - readWatchExpiration(left.metadata ?? {})
+    )[0];
+    const canonicalChannelId = canonicalMapping ? readWatchChannelId(canonicalMapping) : undefined;
+
+    if (canonicalChannelId && canonicalChannelId !== channelId) {
+      context.logger.info('Ignoring stale Google Calendar watch notification', {
+        channelId,
+        resourceCalendarId: calendarId ?? ''
       });
-
-      if (hasNewerStoredChannel) {
-        context.logger.info('Ignoring stale Google Calendar watch notification', {
-          channelId,
-          resourceCalendarId: requestedCalendarId ?? ''
-        });
-        return {
-          system: SYSTEM,
-          status: 'ignored',
-          syncedCount: 0,
-          details: { reason: 'stale-watch-channel', channelId, resourceCalendarId: requestedCalendarId ?? '' }
-        };
-      }
-
-      projectMappings = [];
+      await stopStaleWatchChannel(context, channelId, resourceId);
+      return {
+        system: SYSTEM,
+        status: 'ignored',
+        syncedCount: 0,
+        details: { reason: 'stale-watch-channel', channelId, resourceCalendarId: calendarId ?? '' }
+      };
     }
-  }
 
-  if (projectMappings.length === 0 && input.calendarId) {
-    projectMappings = allProjectMappings.filter((mapping) => mapping.externalId === input.calendarId);
-  }
-
-  if (projectMappings.length === 0 && resourceCalendarId) {
-    projectMappings = allProjectMappings.filter((mapping) => mapping.externalId === resourceCalendarId);
+    projectMappings = canonicalMapping ? [canonicalMapping] : calendarMappings;
   }
 
   if (projectMappings.length === 0) {
@@ -555,7 +569,7 @@ async function syncSingleGoogleEvent(
         projectId: projectMapping.localId,
         startDateTime: dateRange.startDateTime,
         endDateTime: dateRange.endDateTime,
-        description: getTaskDescriptionFromEvent(event),
+        description: getTaskDescriptionFromEvent(event, ORIGIN_GOOGLE),
         location: event.location
       } as TaskCreateInput);
     } catch (err) {
@@ -577,7 +591,7 @@ async function syncSingleGoogleEvent(
     }
     const createdTask = created as TaskDto;
     const timesheetUpdatedAt = getTaskLastUpdateMillis(createdTask) || Date.now();
-    const metadata = buildTaskMappingMetadata(calendarId, event, timesheetUpdatedAt);
+    const metadata = buildTaskMappingMetadata(calendarId, event, timesheetUpdatedAt, ORIGIN_GOOGLE);
 
     await context.mappings.upsert({
       system: SYSTEM,
@@ -611,16 +625,17 @@ async function syncSingleGoogleEvent(
     return false;
   }
 
+  const storedOrigin = readMappingOrigin(taskMapping);
   const updated = await context.data.updateTask(taskMapping.localId, {
     projectId: projectMapping.localId,
     startDateTime: dateRange.startDateTime,
     endDateTime: dateRange.endDateTime,
-    description: getTaskDescriptionFromEvent(event),
+    description: getTaskDescriptionFromEvent(event, storedOrigin),
     location: event.location
   } as TaskUpdateInput);
   const updatedTask = updated as TaskDto | undefined;
   const timesheetUpdatedAt = getTaskLastUpdateMillis(updatedTask) || Date.now();
-  const metadata = buildTaskMappingMetadata(calendarId, event, timesheetUpdatedAt);
+  const metadata = buildTaskMappingMetadata(calendarId, event, timesheetUpdatedAt, storedOrigin ?? inferOriginFromEvent(event));
 
   await context.mappings.upsert({
     system: SYSTEM,
@@ -671,6 +686,12 @@ async function getTaskMappingByExternalId(
 ): Promise<MappingRecord | null> {
   if (caches?.taskMappingByExternalId?.has(externalId)) {
     return caches.taskMappingByExternalId.get(externalId) ?? null;
+  }
+
+  // The webhook path preloads the complete task mapping list — a miss means
+  // no mapping exists, so skip the per-event lookup round-trip.
+  if (caches?.taskMappingsComplete) {
+    return null;
   }
 
   const mapping = await context.mappings.findByExternal({
@@ -727,7 +748,7 @@ function toTaskDateRange(event: GoogleCalendarEvent): { startDateTime: string; e
   };
 }
 
-function buildGoogleEventPayload(task: TaskDto): Record<string, unknown> {
+function buildGoogleEventPayload(task: TaskDto, origin?: string): Record<string, unknown> {
   const startDateTime = task.startDateTime;
   const endDateTime = task.endDateTime;
 
@@ -735,37 +756,67 @@ function buildGoogleEventPayload(task: TaskDto): Record<string, unknown> {
     throw new Error(`Task ${task.id} is missing start or end datetime.`);
   }
 
-  const projectSummary = task.project?.title
-    ? [task.project.title, task.project.employer].filter(Boolean).join(' - ')
-    : '';
-  const description = typeof task.description === 'string' ? task.description.trim() : '';
-  const summary = projectSummary || description || 'Timesheet task';
-
-  const creatorEmail = task.member?.email;
-  const creatorDisplayName = task.member?.displayName;
-
-  return {
-    summary,
-    location: task.location ?? null,
-    description: task.description ?? '',
+  const payload: Record<string, unknown> = {
     start: {
       dateTime: startDateTime
     },
     end: {
       dateTime: endDateTime
-    },
-    extendedProperties: {
+    }
+  };
+  if (task.location) {
+    payload.location = task.location;
+  }
+
+  // Google-originated events belong to the user: never rename them to the
+  // project title and never overwrite their body. The task description
+  // round-trips with the event title (summary), mirroring the import mapping.
+  if (origin === ORIGIN_GOOGLE) {
+    const description = typeof task.description === 'string' ? task.description.trim() : '';
+    if (description) {
+      payload.summary = description;
+    }
+    // Keep the timesheetId check field on the event — it prevents duplicate
+    // imports when mappings are lost (e.g. reinstall). Harmless for the text
+    // mapping since the stored origin decides it, not the stamp.
+    payload.extendedProperties = {
       private: {
         timesheetId: task.id
       }
-    },
-    creator: creatorEmail
-      ? {
-          email: creatorEmail,
-          displayName: creatorDisplayName
-        }
-      : undefined
+    };
+    return payload;
+  }
+
+  // Unknown origin (mappings predating the origin marker): the event may be
+  // user-created, so writing texts risks destroying it. Only sync times and
+  // location.
+  if (origin !== ORIGIN_TIMESHEET) {
+    return payload;
+  }
+
+  const projectSummary = task.project?.title
+    ? [task.project.title, task.project.employer].filter(Boolean).join(' - ')
+    : '';
+  const description = typeof task.description === 'string' ? task.description.trim() : '';
+
+  const creatorEmail = task.member?.email;
+  const creatorDisplayName = task.member?.displayName;
+
+  payload.summary = projectSummary || description || 'Timesheet task';
+  payload.location = task.location ?? null;
+  payload.description = task.description ?? '';
+  payload.extendedProperties = {
+    private: {
+      timesheetId: task.id
+    }
   };
+  if (creatorEmail) {
+    payload.creator = {
+      email: creatorEmail,
+      displayName: creatorDisplayName
+    };
+  }
+  return payload;
 }
 
 async function findEventByTimesheetId(
@@ -788,10 +839,34 @@ function getMappedCalendarId(mapping: MappingRecord): string | undefined {
   return readMetadataString(metadata, 'calendarId');
 }
 
+function readWatchChannelId(mapping: MappingRecord): string | undefined {
+  const metadata = mapping.metadata ?? {};
+  return readMetadataString(metadata, 'watchChannelId')
+    || readMetadataString(metadata, 'channelId');
+}
+
+async function stopStaleWatchChannel(
+  context: IntegrationContext<GoogleCalendarConfig>,
+  channelId: string,
+  resourceId: string | undefined
+): Promise<void> {
+  if (!resourceId) {
+    return;
+  }
+  try {
+    const client = createClient(context);
+    await client.stopWatch(channelId, resourceId);
+    context.logger.info('Stopped stale Google Calendar watch channel', { channelId });
+  } catch (err) {
+    context.logger.warn('Failed to stop stale watch channel', { channelId, error: String(err) });
+  }
+}
+
 function buildTaskMappingMetadata(
   calendarId: string,
   event: GoogleCalendarEvent,
-  timesheetUpdatedAt?: number
+  timesheetUpdatedAt?: number,
+  origin?: string
 ): Record<string, string> {
   return {
     calendarId,
@@ -799,8 +874,23 @@ function buildTaskMappingMetadata(
     updated: event.updated ?? '',
     timesheetUpdatedAt: timesheetUpdatedAt && Number.isFinite(timesheetUpdatedAt)
       ? String(Math.floor(timesheetUpdatedAt))
-      : ''
+      : '',
+    origin: origin ?? ''
   };
+}
+
+function readMappingOrigin(mapping: MappingRecord | null | undefined): string | undefined {
+  if (!mapping) {
+    return undefined;
+  }
+  return readMetadataString(mapping.metadata ?? {}, 'origin');
+}
+
+function inferOriginFromEvent(event: GoogleCalendarEvent | undefined): string | undefined {
+  // Timesheet-created events always carry the timesheetId stamp, so its
+  // absence proves a Google origin. Presence is ambiguous — old echoes
+  // stamped imported events too — so those stay unknown.
+  return event?.extendedProperties?.private?.timesheetId ? undefined : ORIGIN_GOOGLE;
 }
 
 function getTaskLastUpdateMillis(task?: Partial<TaskDto> | null): number {
@@ -819,11 +909,18 @@ function getTaskLastUpdateMillis(task?: Partial<TaskDto> | null): number {
   return 0;
 }
 
-function getTaskDescriptionFromEvent(event: GoogleCalendarEvent): string {
+function getTaskDescriptionFromEvent(event: GoogleCalendarEvent, origin?: string): string {
+  // Google-originated events keep the task description in the event title
+  // (summary). The timesheetId stamp is not reliable for them: old echoes
+  // stamped imported events too, so the stored mapping origin wins.
+  if (origin === ORIGIN_GOOGLE) {
+    const summary = event.summary?.trim();
+    return summary || event.description || '';
+  }
   // Timesheet-originated events carry the project title in the summary and the
   // task description in the description — mapping the summary back would
   // overwrite the task description with the project title.
-  if (event.extendedProperties?.private?.timesheetId) {
+  if (origin === ORIGIN_TIMESHEET || event.extendedProperties?.private?.timesheetId) {
     return event.description ?? '';
   }
   const summary = event.summary?.trim();

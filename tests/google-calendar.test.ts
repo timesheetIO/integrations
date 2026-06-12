@@ -534,6 +534,81 @@ describe('google-calendar plugin', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('ignores and stops a stale channel still stored on a duplicate mapping of the same calendar', async () => {
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: { forEach: () => {} },
+      json: async () => ({}),
+      text: async () => '{}'
+    });
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock as unknown as typeof fetch;
+
+    const createTask = jest.fn();
+    const context = {
+      userId: 'user-1',
+      installationId: 'installation-1',
+      config: {},
+      data: {
+        createTask,
+        getTask: jest.fn(),
+        updateTask: jest.fn(),
+        deleteTask: jest.fn()
+      },
+      credentials: {
+        getAccessToken: jest.fn().mockResolvedValue('token'),
+        refreshToken: jest.fn().mockResolvedValue('token-2')
+      },
+      mappings: {
+        list: jest.fn().mockResolvedValue([
+          {
+            localId: 'project-1',
+            externalId: 'calendar-1',
+            syncStatus: 'SYNCED',
+            metadata: { watchChannelId: 'active-channel', watchExpiration: String(Date.now() + 6 * 24 * 60 * 60 * 1000) }
+          },
+          {
+            localId: 'project-2',
+            externalId: 'calendar-1',
+            syncStatus: 'SYNCED',
+            metadata: { watchChannelId: 'old-channel', watchExpiration: String(Date.now() + 24 * 60 * 60 * 1000) }
+          }
+        ]),
+        findByExternal: jest.fn(),
+        upsert: jest.fn(),
+        get: jest.fn(),
+        delete: jest.fn()
+      },
+      state: {
+        get: jest.fn(),
+        set: jest.fn(),
+        delete: jest.fn()
+      },
+      logger: {
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn()
+      }
+    } as unknown as IntegrationContext;
+
+    const result = await handleGoogleWebhook({
+      headers: {
+        'x-goog-channel-id': 'old-channel',
+        'x-goog-resource-id': 'resource-old',
+        'x-goog-resource-uri': 'https://www.googleapis.com/calendar/v3/calendars/calendar-1/events?alt=json'
+      }
+    }, context);
+
+    expect(result.status).toBe('ignored');
+    expect(result.details).toEqual(expect.objectContaining({ reason: 'stale-watch-channel', channelId: 'old-channel' }));
+    expect(createTask).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toBe('https://www.googleapis.com/calendar/v3/channels/stop');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({ id: 'old-channel', resourceId: 'resource-old' });
+  });
+
   it('routes legacy unmatched-channel webhooks by resource URI and uses a narrow recent update window', async () => {
     const createTask = jest.fn().mockResolvedValue({ id: 'task-created' });
     const stateSet = jest.fn();
@@ -746,5 +821,195 @@ describe('google-calendar plugin', () => {
     );
     expect(context.state.delete).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  function outboundUpdateContext(taskMappingMetadata: Record<string, string>, upsert: jest.Mock) {
+    return {
+      userId: 'user-1',
+      installationId: 'installation-1',
+      config: {},
+      data: {
+        getTask: jest.fn().mockResolvedValue(baseTask)
+      },
+      credentials: {
+        getAccessToken: jest.fn().mockResolvedValue('token'),
+        refreshToken: jest.fn().mockResolvedValue('token-2')
+      },
+      mappings: {
+        get: jest
+          .fn()
+          .mockResolvedValueOnce({ localId: 'project-1', externalId: 'calendar-1', syncStatus: 'SYNCED' })
+          .mockResolvedValueOnce({
+            localId: 'task-1',
+            externalId: 'event-1',
+            syncStatus: 'SYNCED',
+            metadata: taskMappingMetadata
+          }),
+        upsert,
+        delete: jest.fn(),
+        list: jest.fn(),
+        findByExternal: jest.fn()
+      },
+      state: {
+        get: jest.fn(),
+        set: jest.fn(),
+        delete: jest.fn()
+      },
+      logger: {
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn()
+      }
+    } as unknown as IntegrationContext;
+  }
+
+  it('preserves the event title when updating a Google-originated event', async () => {
+    const upsert = jest.fn();
+    const context = outboundUpdateContext({ calendarId: 'calendar-1', origin: 'google' }, upsert);
+
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: { forEach: () => {} },
+      json: async () => ({ id: 'event-1', summary: 'Calendar sync task', updated: '2026-02-20T11:00:00Z' }),
+      text: async () => '{}'
+    });
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock as typeof fetch;
+
+    const result = await syncTaskToExternal({ taskId: 'task-1' }, context);
+
+    expect(result.status).toBe('synced');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/calendars/calendar-1/events/event-1');
+    expect(init.method).toBe('PATCH');
+    const body = JSON.parse(init.body as string);
+    expect(body.summary).toBe('Calendar sync task');
+    expect(body).not.toHaveProperty('description');
+    expect(body.extendedProperties).toEqual({ private: { timesheetId: 'task-1' } });
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({ origin: 'google' })
+    }));
+  });
+
+  it('only syncs times and location when updating a mapping with unknown origin', async () => {
+    const upsert = jest.fn();
+    const context = outboundUpdateContext({ calendarId: 'calendar-1' }, upsert);
+
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: { forEach: () => {} },
+      json: async () => ({
+        id: 'event-1',
+        summary: '#88026123456 - Test - Testaktion',
+        updated: '2026-02-20T11:00:00Z',
+        extendedProperties: { private: { timesheetId: 'task-1' } }
+      }),
+      text: async () => '{}'
+    });
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock as typeof fetch;
+
+    const result = await syncTaskToExternal({ taskId: 'task-1' }, context);
+
+    expect(result.status).toBe('synced');
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect(body).not.toHaveProperty('summary');
+    expect(body).not.toHaveProperty('description');
+    expect(body.start).toEqual({ dateTime: baseTask.startDateTime });
+    expect(body.end).toEqual({ dateTime: baseTask.endDateTime });
+    expect(body.location).toBe('Berlin');
+  });
+
+  it('reads the event title for a Google-originated mapping even after the event was stamped', async () => {
+    const getTask = jest.fn().mockResolvedValue({
+      id: 'task-1',
+      lastUpdate: Date.parse('2026-02-20T10:00:00Z')
+    });
+    const updateTask = jest.fn().mockResolvedValue({
+      id: 'task-1',
+      lastUpdate: Date.parse('2026-02-20T11:15:00Z')
+    });
+    const upsert = jest.fn();
+
+    const context = {
+      userId: 'user-1',
+      installationId: 'installation-1',
+      config: {},
+      data: {
+        createTask: jest.fn(),
+        getTask,
+        updateTask,
+        deleteTask: jest.fn()
+      },
+      credentials: {
+        getAccessToken: jest.fn().mockResolvedValue('token'),
+        refreshToken: jest.fn().mockResolvedValue('token-2')
+      },
+      mappings: {
+        list: jest.fn().mockResolvedValue([{ localId: 'project-1', externalId: 'calendar-1', syncStatus: 'SYNCED' }]),
+        findByExternal: jest.fn().mockResolvedValue({
+          localId: 'task-1',
+          externalId: 'event-1',
+          syncStatus: 'SYNCED',
+          metadata: {
+            calendarId: 'calendar-1',
+            updated: '2026-02-20T11:00:00Z',
+            origin: 'google'
+          }
+        }),
+        upsert,
+        get: jest.fn(),
+        delete: jest.fn()
+      },
+      state: {
+        get: jest.fn().mockResolvedValue(null),
+        set: jest.fn(),
+        delete: jest.fn()
+      },
+      logger: {
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn()
+      }
+    } as unknown as IntegrationContext;
+
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: { forEach: () => {} },
+      json: async () => ({
+        items: [
+          {
+            id: 'event-1',
+            summary: '#88026123456 - Test - Testaktion',
+            description: 'leftover body text',
+            start: { dateTime: '2026-02-20T12:00:00Z' },
+            end: { dateTime: '2026-02-20T13:00:00Z' },
+            updated: '2026-02-20T11:10:00Z',
+            extendedProperties: { private: { timesheetId: 'task-1' } }
+          }
+        ],
+        nextSyncToken: 'next-token'
+      }),
+      text: async () => '{}'
+    });
+
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock as typeof fetch;
+
+    const result = await runFullSync(undefined, context);
+
+    expect(result.syncedCount).toBe(1);
+    expect(updateTask).toHaveBeenCalledWith('task-1', expect.objectContaining({
+      description: '#88026123456 - Test - Testaktion'
+    }));
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({ origin: 'google' })
+    }));
   });
 });

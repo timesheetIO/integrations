@@ -94,8 +94,11 @@ export class GoogleCalendarClient {
   }
 
   async updateEvent(calendarId: string, eventId: string, payload: Record<string, unknown>): Promise<GoogleCalendarEvent> {
+    // PATCH (events.patch) only writes the fields in the payload. PUT
+    // (events.update) replaces the whole event and clears everything not
+    // sent — attendees, reminders, color — which destroys user-created events.
     return this.request<GoogleCalendarEvent>(
-      'PUT',
+      'PATCH',
       `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
       undefined,
       payload
@@ -162,7 +165,7 @@ export class GoogleCalendarClient {
   private static readonly REQUEST_TIMEOUT_MS = 30_000;
 
   private async request<T>(
-    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
     path: string,
     query?: Record<string, string | number | boolean | undefined>,
     body?: unknown,
