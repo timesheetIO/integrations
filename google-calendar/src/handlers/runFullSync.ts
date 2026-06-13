@@ -4,6 +4,7 @@ import { GoogleCalendarSyncResult, runGoogleCalendarFullSync, ensureWatchChannel
 
 interface ManualSyncInput {
   fullResync?: boolean;
+  /** Legacy option from the updatedMin-window era — sync is now always token-based. */
   recentDays?: number;
 }
 
@@ -11,19 +12,12 @@ export const runFullSync = defineHandler<ManualSyncInput | void, GoogleCalendarS
   async (input, context) => {
     const syncDirection = context.config?.syncDirection ?? 'bidirectional';
     const fullResync = !!input?.fullResync;
-    const recentDays = Number.isFinite(input?.recentDays) && input?.recentDays && input.recentDays > 0
-      ? Math.min(Math.floor(input.recentDays), 30)
-      : 7;
-    const fallbackUpdatedMin = fullResync
-      ? undefined
-      : new Date(Date.now() - (recentDays * 24 * 60 * 60 * 1000)).toISOString();
 
     context.logger.info('Running Google Calendar manual sync', {
       installationId: context.installationId,
       syncDirection,
       hasWebhookUrl: !!context.metadata?.webhooks?.['integration-webhook'],
-      syncMode: fullResync ? 'full' : 'recent',
-      recentDays: fullResync ? undefined : recentDays
+      syncMode: fullResync ? 'full' : 'incremental'
     });
 
     // Register watch channels — this is the critical part for inbound sync.
@@ -43,22 +37,28 @@ export const runFullSync = defineHandler<ManualSyncInput | void, GoogleCalendarS
         details: {
           watchChannelsRegistered: true,
           syncDirection,
-          syncMode: fullResync ? 'full' : 'recent'
+          syncMode: fullResync ? 'full' : 'incremental'
         }
       };
     }
 
+    if (fullResync) {
+      // Force the token-restoring full listing instead of an incremental pass.
+      context.logger.info('Full resync requested — clearing stored sync tokens');
+    }
+
+    // Always lock: a manual sync racing a webhook sync without the calendar
+    // and import locks is exactly how duplicate tasks were created.
     const result = await runGoogleCalendarFullSync(context, {
-      fallbackUpdatedMin,
-      lockTtlSeconds: fullResync ? undefined : 15 * 60
+      lockTtlSeconds: 15 * 60,
+      forceFullResync: fullResync
     });
     return {
       ...result,
       details: {
         ...result.details,
         watchChannelsRegistered: true,
-        syncMode: fullResync ? 'full' : 'recent',
-        recentDays: fullResync ? undefined : recentDays
+        syncMode: fullResync ? 'full' : 'incremental'
       }
     };
   }

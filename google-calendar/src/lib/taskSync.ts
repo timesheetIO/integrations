@@ -16,7 +16,10 @@ import {
 const SYSTEM = 'google-calendar';
 const PROJECT_ENTITY = 'project';
 const TASK_ENTITY = 'task';
-const WEBHOOK_FALLBACK_WINDOW_MS = 10 * 60 * 1000;
+// Imports are bounded client-side, NOT via timeMin/updatedMin request params:
+// Google omits nextSyncToken from filtered listings, which permanently breaks
+// incremental sync (every webhook then loops through the expired-token path).
+const IMPORT_CUTOFF_MS = 365 * 24 * 60 * 60 * 1000;
 const EVENT_IMPORT_LOCK_TTL_SECONDS = 60 * 60;
 // Where the mapped event was created. Google-originated events keep their own
 // title (synced with the task description); Timesheet-originated events show
@@ -42,18 +45,18 @@ export interface SyncBatchCaches {
 
 interface SyncCalendarOptions {
   caches?: SyncBatchCaches;
-  fallbackUpdatedMin?: string;
   lockTtlSeconds?: number;
+  /** Ignore the stored sync token and run the token-restoring full listing. */
+  forceFullResync?: boolean;
 }
 
 interface FetchAndSyncOptions {
-  fallbackUpdatedMin?: string;
   importLockTtlSeconds?: number;
 }
 
 interface FullSyncOptions {
-  fallbackUpdatedMin?: string;
   lockTtlSeconds?: number;
+  forceFullResync?: boolean;
 }
 
 // Shared client instance for batch execution — avoids re-fetching the access token per change.
@@ -248,8 +251,8 @@ export async function runGoogleCalendarFullSync(
 
       const perCalendarCount = await syncCalendar(context, mapping, {
         caches,
-        fallbackUpdatedMin: options.fallbackUpdatedMin,
-        lockTtlSeconds: options.lockTtlSeconds
+        lockTtlSeconds: options.lockTtlSeconds,
+        forceFullResync: options.forceFullResync
       });
       syncedCount += perCalendarCount;
     }
@@ -342,7 +345,6 @@ export async function handleGoogleWebhook(
 
   let syncedCount = 0;
   const seenCalendarIds = new Set<string>();
-  const fallbackUpdatedMin = toTimesheetDateTime(new Date(Date.now() - WEBHOOK_FALLBACK_WINDOW_MS));
   for (const mapping of projectMappings) {
     if (!mapping.externalId || seenCalendarIds.has(mapping.externalId)) {
       continue;
@@ -350,7 +352,6 @@ export async function handleGoogleWebhook(
     seenCalendarIds.add(mapping.externalId);
     syncedCount += await syncCalendar(context, mapping, {
       caches,
-      fallbackUpdatedMin,
       lockTtlSeconds: 15 * 60
     });
   }
@@ -396,12 +397,12 @@ async function syncCalendar(
 
   const syncStateKey = getSyncTokenStateKey(calendarId);
   try {
-    const metadataSyncToken = readMetadataString(projectMapping.metadata ?? {}, 'syncToken');
-
-    let syncToken = (await context.state.get<string>(syncStateKey)) ?? undefined;
-    if (!syncToken && metadataSyncToken) {
-      syncToken = metadataSyncToken;
-    }
+    // Note: legacy plugin versions stored a syncToken in the project mapping
+    // metadata. It is never refreshed and therefore permanently expired —
+    // falling back to it guaranteed a 410 round-trip on every sync.
+    const syncToken = options.forceFullResync
+      ? undefined
+      : (await context.state.get<string>(syncStateKey)) ?? undefined;
 
     try {
       return await fetchAndSyncEvents(
@@ -413,22 +414,17 @@ async function syncCalendar(
         syncToken,
         options.caches,
         {
-          fallbackUpdatedMin: options.fallbackUpdatedMin,
           importLockTtlSeconds: options.lockTtlSeconds ? EVENT_IMPORT_LOCK_TTL_SECONDS : undefined
         }
       );
     } catch (err) {
-      // Google returns 400 or 410 when a sync token is invalid/expired. For
-      // webhook delivery, avoid a heavy one-year resync and fetch recently
-      // updated events only; scheduled/manual sync can still do the full repair.
+      // Google returns 400 or 410 when a sync token is invalid/expired. Run
+      // the token-restoring full listing — with the preloaded mapping caches,
+      // mapped/unchanged events cost no API calls, so this is a few page
+      // fetches plus imports of genuinely missing events.
       const errMsg = String(err);
       if (syncToken && (errMsg.includes('(410)') || errMsg.includes('Invalid sync token'))) {
-        context.logger.warn(
-          options.fallbackUpdatedMin
-            ? 'Sync token expired, performing recent webhook resync'
-            : 'Sync token expired, performing full resync',
-          { calendarId, fallbackUpdatedMin: options.fallbackUpdatedMin ?? '' }
-        );
+        context.logger.warn('Sync token expired, performing full resync to restore it', { calendarId });
         await context.state.delete(syncStateKey);
         return await fetchAndSyncEvents(
           context,
@@ -439,7 +435,6 @@ async function syncCalendar(
           undefined,
           options.caches,
           {
-            fallbackUpdatedMin: options.fallbackUpdatedMin,
             importLockTtlSeconds: options.lockTtlSeconds ? EVENT_IMPORT_LOCK_TTL_SECONDS : undefined
           }
         );
@@ -478,21 +473,23 @@ async function fetchAndSyncEvents(
   let nextSyncToken: string | undefined;
   let syncedCount = 0;
 
+  // The token-restoring full listing must not use timeMin/updatedMin — Google
+  // omits nextSyncToken from filtered listings. Old events are bounded
+  // client-side instead: events that ended before the cutoff are not imported.
+  const importCutoffMs = syncToken ? undefined : Date.now() - IMPORT_CUTOFF_MS;
+
   do {
     const response = await client.listEvents(calendarId, {
       showDeleted: true,
       singleEvents: true,
       syncToken,
-      pageToken,
-      timeMin: !syncToken && !options.fallbackUpdatedMin
-        ? new Date(Date.now() - (365 * 24 * 60 * 60 * 1000)).toISOString()
-        : undefined,
-      updatedMin: !syncToken ? options.fallbackUpdatedMin : undefined
+      pageToken
     });
 
     for (const event of response.items ?? []) {
       const synced = await syncSingleGoogleEvent(context, client, projectMapping, calendarId, event, caches, {
-        importLockTtlSeconds: options.importLockTtlSeconds
+        importLockTtlSeconds: options.importLockTtlSeconds,
+        importCutoffMs
       });
       if (synced) {
         syncedCount += 1;
@@ -517,7 +514,7 @@ async function syncSingleGoogleEvent(
   calendarId: string,
   event: GoogleCalendarEvent,
   caches?: SyncBatchCaches,
-  options: { importLockTtlSeconds?: number } = {}
+  options: { importLockTtlSeconds?: number; importCutoffMs?: number } = {}
 ): Promise<boolean> {
   if (!event?.id) {
     return false;
@@ -549,6 +546,16 @@ async function syncSingleGoogleEvent(
   if (!taskMapping?.localId) {
     if (localTaskIdFromExtendedProperties) {
       return false;
+    }
+
+    // Client-side import bound for the unfiltered token-restoring listing —
+    // don't create tasks for long-past events. Mapped events above still
+    // process updates regardless of age.
+    if (options.importCutoffMs) {
+      const endMs = Date.parse(dateRange.endDateTime);
+      if (Number.isFinite(endMs) && endMs < options.importCutoffMs) {
+        return false;
+      }
     }
 
     let importLockKey: string | undefined;
@@ -609,7 +616,11 @@ async function syncSingleGoogleEvent(
           }
         }
       });
-      if (patched?.id) {
+      // Only adopt the post-stamp `updated` when nothing else changed. If the
+      // event was edited in Google between the list fetch and the stamp, the
+      // task was built from stale data — keep the listed `updated` so the
+      // pending webhook re-processes the event instead of self-skipping.
+      if (patched?.id && eventContentEquals(event, patched)) {
         stampedEvent = patched;
       }
     } catch (err) {
@@ -919,6 +930,15 @@ function readMappingOrigin(mapping: MappingRecord | null | undefined): string | 
   return readMetadataString(mapping.metadata ?? {}, 'origin');
 }
 
+function eventContentEquals(a: GoogleCalendarEvent, b: GoogleCalendarEvent): boolean {
+  return (a.summary ?? '') === (b.summary ?? '')
+    && (a.description ?? '') === (b.description ?? '')
+    && (a.location ?? '') === (b.location ?? '')
+    && (a.status ?? '') === (b.status ?? '')
+    && (a.start?.dateTime ?? a.start?.date ?? '') === (b.start?.dateTime ?? b.start?.date ?? '')
+    && (a.end?.dateTime ?? a.end?.date ?? '') === (b.end?.dateTime ?? b.end?.date ?? '');
+}
+
 function inferOriginFromEvent(event: GoogleCalendarEvent | undefined): string | undefined {
   // Timesheet-created events always carry the timesheetId stamp, so its
   // absence proves a Google origin. Presence is ambiguous — old echoes
@@ -1220,11 +1240,6 @@ async function stopDuplicateWatchChannel(
     metadata: updatedMetadata,
     syncStatus: 'SYNCED'
   });
-}
-
-/** Format a Date to the offset format the Timesheet backend expects: yyyy-MM-dd'T'HH:mm:ss+00:00 */
-function toTimesheetDateTime(date: Date): string {
-  return date.toISOString().replace(/\.\d{3}Z$/, '+00:00');
 }
 
 function readMetadataString(metadata: Record<string, unknown>, key: string): string | undefined {

@@ -187,8 +187,10 @@ describe('google-calendar plugin', () => {
       description: 'Imported'
     }));
     expect(upsert).toHaveBeenCalledWith(expect.objectContaining({ externalId: 'event-1' }));
-    expect(requestedUrl.searchParams.has('updatedMin')).toBe(true);
+    // Time filters suppress nextSyncToken — the listing must stay unfiltered.
+    expect(requestedUrl.searchParams.has('updatedMin')).toBe(false);
     expect(requestedUrl.searchParams.has('timeMin')).toBe(false);
+    expect(requestedUrl.searchParams.has('syncToken')).toBe(false);
     expect(stateSet).toHaveBeenCalledWith('google-calendar:sync-token:calendar-1', 'next-token');
   });
 
@@ -609,7 +611,7 @@ describe('google-calendar plugin', () => {
     expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({ id: 'old-channel', resourceId: 'resource-old' });
   });
 
-  it('routes legacy unmatched-channel webhooks by resource URI and uses a narrow recent update window', async () => {
+  it('routes legacy unmatched-channel webhooks by resource URI and restores the sync token unfiltered', async () => {
     const createTask = jest.fn().mockResolvedValue({ id: 'task-created' });
     const stateSet = jest.fn();
 
@@ -678,12 +680,12 @@ describe('google-calendar plugin', () => {
     }, context);
 
     const requestedUrl = new URL(String(fetchMock.mock.calls[0][0]));
-    const updatedMin = requestedUrl.searchParams.get('updatedMin');
     expect(result.syncedCount).toBe(1);
     expect(createTask).toHaveBeenCalled();
-    expect(requestedUrl.searchParams.has('updatedMin')).toBe(true);
+    // Time filters suppress nextSyncToken — the listing must stay unfiltered
+    // so incremental sync recovers instead of looping through the 410 path.
+    expect(requestedUrl.searchParams.has('updatedMin')).toBe(false);
     expect(requestedUrl.searchParams.has('timeMin')).toBe(false);
-    expect(updatedMin ? Date.now() - Date.parse(updatedMin) : Number.POSITIVE_INFINITY).toBeLessThan(15 * 60 * 1000);
     expect(stateSet).toHaveBeenCalledWith('google-calendar:sync-token:calendar-1', 'next-token');
   });
 
@@ -991,6 +993,8 @@ describe('google-calendar plugin', () => {
         json: async () => ({
           id: 'event-1',
           summary: 'My meeting',
+          start: { dateTime: '2026-02-20T10:00:00Z' },
+          end: { dateTime: '2026-02-20T11:00:00Z' },
           updated: '2026-02-20T11:12:00Z',
           extendedProperties: { private: { timesheetId: 'task-created' } }
         }),
@@ -1017,6 +1021,164 @@ describe('google-calendar plugin', () => {
       externalId: 'event-1',
       metadata: expect.objectContaining({ origin: 'google', updated: '2026-02-20T11:12:00Z' })
     }));
+  });
+
+  it('keeps the pre-stamp updated when the event changed concurrently during import', async () => {
+    const createTask = jest.fn().mockResolvedValue({ id: 'task-created', lastUpdate: Date.now() });
+    const upsert = jest.fn();
+
+    const context = {
+      userId: 'user-1',
+      installationId: 'installation-1',
+      config: {},
+      data: {
+        createTask,
+        getTask: jest.fn(),
+        updateTask: jest.fn(),
+        deleteTask: jest.fn()
+      },
+      credentials: {
+        getAccessToken: jest.fn().mockResolvedValue('token'),
+        refreshToken: jest.fn().mockResolvedValue('token-2')
+      },
+      mappings: {
+        list: jest.fn().mockResolvedValue([{ localId: 'project-1', externalId: 'calendar-1', syncStatus: 'SYNCED', metadata: {} }]),
+        findByExternal: jest.fn().mockResolvedValue(null),
+        upsert,
+        get: jest.fn(),
+        delete: jest.fn()
+      },
+      state: {
+        get: jest.fn().mockResolvedValue(null),
+        set: jest.fn(),
+        delete: jest.fn()
+      },
+      logger: {
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn()
+      }
+    } as unknown as IntegrationContext;
+
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { forEach: () => {} },
+        json: async () => ({
+          items: [
+            {
+              id: 'event-1',
+              summary: 'My meeting',
+              start: { dateTime: '2026-02-20T10:00:00Z' },
+              end: { dateTime: '2026-02-20T11:00:00Z' },
+              updated: '2026-02-20T11:10:00Z'
+            }
+          ],
+          nextSyncToken: 'next-token'
+        }),
+        text: async () => '{}'
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { forEach: () => {} },
+        json: async () => ({
+          // The user moved the event between the list fetch and the stamp.
+          id: 'event-1',
+          summary: 'My meeting',
+          start: { dateTime: '2026-02-20T14:00:00Z' },
+          end: { dateTime: '2026-02-20T15:00:00Z' },
+          updated: '2026-02-20T11:12:00Z',
+          extendedProperties: { private: { timesheetId: 'task-created' } }
+        }),
+        text: async () => '{}'
+      });
+
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock as typeof fetch;
+
+    const result = await runFullSync(undefined, context);
+
+    expect(result.syncedCount).toBe(1);
+    // The mapping keeps the listed event's `updated`, so the pending webhook
+    // for the concurrent edit re-processes the event instead of self-skipping.
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
+      localId: 'task-created',
+      metadata: expect.objectContaining({ updated: '2026-02-20T11:10:00Z' })
+    }));
+  });
+
+  it('does not import events that ended before the cutoff but still stores the sync token', async () => {
+    const createTask = jest.fn().mockResolvedValue({ id: 'task-created', lastUpdate: Date.now() });
+    const stateSet = jest.fn();
+
+    const context = {
+      userId: 'user-1',
+      installationId: 'installation-1',
+      config: {},
+      data: {
+        createTask,
+        getTask: jest.fn(),
+        updateTask: jest.fn(),
+        deleteTask: jest.fn()
+      },
+      credentials: {
+        getAccessToken: jest.fn().mockResolvedValue('token'),
+        refreshToken: jest.fn().mockResolvedValue('token-2')
+      },
+      mappings: {
+        list: jest.fn().mockResolvedValue([{ localId: 'project-1', externalId: 'calendar-1', syncStatus: 'SYNCED', metadata: {} }]),
+        findByExternal: jest.fn().mockResolvedValue(null),
+        upsert: jest.fn(),
+        get: jest.fn(),
+        delete: jest.fn()
+      },
+      state: {
+        get: jest.fn().mockResolvedValue(null),
+        set: stateSet,
+        delete: jest.fn()
+      },
+      logger: {
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn()
+      }
+    } as unknown as IntegrationContext;
+
+    const twoYearsAgo = new Date(Date.now() - 2 * 365 * 24 * 60 * 60 * 1000);
+    const twoYearsAgoEnd = new Date(twoYearsAgo.getTime() + 60 * 60 * 1000);
+    const fetchMock = jest.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: { forEach: () => {} },
+      json: async () => ({
+        items: [
+          {
+            id: 'event-old',
+            summary: 'Ancient meeting',
+            start: { dateTime: twoYearsAgo.toISOString() },
+            end: { dateTime: twoYearsAgoEnd.toISOString() },
+            updated: twoYearsAgoEnd.toISOString()
+          }
+        ],
+        nextSyncToken: 'fresh-token'
+      }),
+      text: async () => '{}'
+    });
+
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock as typeof fetch;
+
+    const result = await runFullSync(undefined, context);
+
+    expect(result.syncedCount).toBe(0);
+    expect(createTask).not.toHaveBeenCalled();
+    expect(stateSet).toHaveBeenCalledWith('google-calendar:sync-token:calendar-1', 'fresh-token');
   });
 
   it('reads the event title for a Google-originated mapping even after the event was stamped', async () => {
