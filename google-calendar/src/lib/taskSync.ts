@@ -236,11 +236,21 @@ export async function runGoogleCalendarFullSync(
   const syncDirection = context.config?.syncDirection ?? 'bidirectional';
   const allowInbound = syncDirection !== 'timesheet-to-google' && syncDirection !== 'timesheet-to-external';
 
-  const projectMappings = await context.mappings.list({ system: SYSTEM, entity: PROJECT_ENTITY });
+  // Preload the complete task mapping list once. Without it, every event in a
+  // full resync falls through to a per-event findByExternal round-trip
+  // (~1.3s of flat api.timesheet.io latency each), so a calendar with a few
+  // hundred events exhausts the 15-minute execution budget before any work is
+  // done. With the cache, already-mapped events cost no API calls — this is the
+  // same preload handleGoogleWebhook does.
+  const [projectMappings, allTaskMappings] = await Promise.all([
+    context.mappings.list({ system: SYSTEM, entity: PROJECT_ENTITY }),
+    context.mappings.list({ system: SYSTEM, entity: TASK_ENTITY })
+  ]);
   if (projectMappings.length === 0) {
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'missing-project-mappings' } };
   }
-  const caches = buildMappingCaches(projectMappings);
+  const caches = buildMappingCaches(projectMappings, allTaskMappings);
+  caches.taskMappingsComplete = true;
 
   let syncedCount = 0;
   if (allowInbound) {
