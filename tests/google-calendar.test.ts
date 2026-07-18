@@ -267,7 +267,22 @@ describe('google-calendar plugin', () => {
         refreshToken: jest.fn().mockResolvedValue('token-2')
       },
       mappings: {
-        list: jest.fn().mockResolvedValue([{ localId: 'project-1', externalId: 'calendar-1', syncStatus: 'SYNCED' }]),
+        // The full sync preloads project AND task mappings (taskMappingsComplete),
+        // so the task mapping must come from list(), not findByExternal().
+        list: jest.fn().mockImplementation(async (input: { entity: string }) => {
+          if (input.entity === 'project') {
+            return [{ localId: 'project-1', externalId: 'calendar-1', syncStatus: 'SYNCED' }];
+          }
+          return [{
+            localId: 'task-1',
+            externalId: 'event-1',
+            syncStatus: 'SYNCED',
+            metadata: {
+              calendarId: 'calendar-1',
+              updated: '2026-02-20T11:10:00Z'
+            }
+          }];
+        }),
         findByExternal: jest.fn().mockResolvedValue({
           localId: 'task-1',
           externalId: 'event-1',
@@ -349,7 +364,22 @@ describe('google-calendar plugin', () => {
         refreshToken: jest.fn().mockResolvedValue('token-2')
       },
       mappings: {
-        list: jest.fn().mockResolvedValue([{ localId: 'project-1', externalId: 'calendar-1', syncStatus: 'SYNCED' }]),
+        // The full sync preloads project AND task mappings (taskMappingsComplete),
+        // so the task mapping must come from list(), not findByExternal().
+        list: jest.fn().mockImplementation(async (input: { entity: string }) => {
+          if (input.entity === 'project') {
+            return [{ localId: 'project-1', externalId: 'calendar-1', syncStatus: 'SYNCED' }];
+          }
+          return [{
+            localId: 'task-1',
+            externalId: 'event-1',
+            syncStatus: 'SYNCED',
+            metadata: {
+              calendarId: 'calendar-1',
+              updated: '2026-02-20T11:00:00Z'
+            }
+          }];
+        }),
         findByExternal: jest.fn().mockResolvedValue({
           localId: 'task-1',
           externalId: 'event-1',
@@ -1207,7 +1237,23 @@ describe('google-calendar plugin', () => {
         refreshToken: jest.fn().mockResolvedValue('token-2')
       },
       mappings: {
-        list: jest.fn().mockResolvedValue([{ localId: 'project-1', externalId: 'calendar-1', syncStatus: 'SYNCED' }]),
+        // The full sync preloads project AND task mappings (taskMappingsComplete),
+        // so the task mapping must come from list(), not findByExternal().
+        list: jest.fn().mockImplementation(async (input: { entity: string }) => {
+          if (input.entity === 'project') {
+            return [{ localId: 'project-1', externalId: 'calendar-1', syncStatus: 'SYNCED' }];
+          }
+          return [{
+            localId: 'task-1',
+            externalId: 'event-1',
+            syncStatus: 'SYNCED',
+            metadata: {
+              calendarId: 'calendar-1',
+              updated: '2026-02-20T11:00:00Z',
+              origin: 'google'
+            }
+          }];
+        }),
         findByExternal: jest.fn().mockResolvedValue({
           localId: 'task-1',
           externalId: 'event-1',

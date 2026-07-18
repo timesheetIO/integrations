@@ -15,7 +15,8 @@ interface ListExercisesParams {
   pageSize?: number;
 }
 
-const PAGE_SIZE_DEFAULT = 200;
+/** Documented maximum page size for session data types (exercise, sleep). */
+const PAGE_SIZE_DEFAULT = 25;
 
 export class GoogleHealthClient {
   private static readonly API_BASE = 'https://health.googleapis.com';
@@ -49,8 +50,9 @@ export class GoogleHealthClient {
     const query = new URLSearchParams();
     query.set('pageSize', String(params.pageSize ?? PAGE_SIZE_DEFAULT));
     if (params.startTimeAfter) {
-      // The reference spells filters in snake_case (start_time vs. endpoint kebab-case).
-      query.set('filter', `start_time>${params.startTimeAfter}`);
+      // Filter fields are spelled in snake_case and support the >= and < operators;
+      // RFC 3339 values must be quoted (see the users.dataTypes.dataPoints.list reference).
+      query.set('filter', `exercise.interval.start_time >= "${params.startTimeAfter}"`);
     }
     if (params.pageToken) {
       query.set('pageToken', params.pageToken);
@@ -153,51 +155,65 @@ export class GoogleHealthClient {
   }
 }
 
+/**
+ * Maps a raw DataPoint into a normalized GoogleHealthExercise. Data points
+ * without an `exercise` payload or interval times are not importable as time
+ * entries and are dropped.
+ */
 function parseExercise(raw: unknown): GoogleHealthExercise | null {
   if (!raw || typeof raw !== 'object') {
     return null;
   }
   const point = raw as Record<string, unknown>;
-  const id = typeof point.id === 'string' ? point.id : typeof point.name === 'string' ? point.name : null;
-  const startTime = typeof point.startTime === 'string' ? point.startTime : null;
-  const endTime = typeof point.endTime === 'string' ? point.endTime : null;
-  if (!id || !startTime || !endTime) {
+  const id = typeof point.name === 'string' ? point.name : typeof point.id === 'string' ? point.id : null;
+
+  const exercise = point.exercise && typeof point.exercise === 'object'
+    ? (point.exercise as Record<string, unknown>)
+    : null;
+  if (!id || !exercise) {
     return null;
   }
 
-  // Google Health may nest exercise-specific fields under `exercise` or expose them at the root.
-  const inner = (point.exercise && typeof point.exercise === 'object')
-    ? (point.exercise as Record<string, unknown>)
-    : point;
+  const interval = exercise.interval && typeof exercise.interval === 'object'
+    ? (exercise.interval as Record<string, unknown>)
+    : null;
+  const startTime = interval && typeof interval.startTime === 'string' ? interval.startTime : null;
+  const endTime = interval && typeof interval.endTime === 'string' ? interval.endTime : null;
+  if (!startTime || !endTime) {
+    return null;
+  }
 
-  const type = typeof inner.type === 'string' ? inner.type : undefined;
-  const activeMinutes = typeof inner.activeMinutes === 'number' ? inner.activeMinutes : undefined;
-  const distance = numericValue(inner.distance);
-  const totalCalories = numericValue(inner.totalCalories);
+  const exerciseType = typeof exercise.exerciseType === 'string' ? exercise.exerciseType : undefined;
+  const displayName = typeof exercise.displayName === 'string' ? exercise.displayName : undefined;
+  const activeDuration = typeof exercise.activeDuration === 'string' ? exercise.activeDuration : undefined;
 
-  const source = point.source && typeof point.source === 'object'
+  const metrics = exercise.metricsSummary && typeof exercise.metricsSummary === 'object'
+    ? (exercise.metricsSummary as Record<string, unknown>)
+    : null;
+  const caloriesKcal = metrics && typeof metrics.caloriesKcal === 'number' ? metrics.caloriesKcal : undefined;
+  const distanceMillimeters = metrics && typeof metrics.distanceMillimeters === 'number'
+    ? metrics.distanceMillimeters
+    : undefined;
+
+  const dataSource = point.dataSource && typeof point.dataSource === 'object'
+    ? (point.dataSource as Record<string, unknown>)
+    : null;
+  const source = dataSource
     ? {
-        name: typeof (point.source as Record<string, unknown>).name === 'string'
-          ? ((point.source as Record<string, unknown>).name as string)
-          : undefined,
-        type: typeof (point.source as Record<string, unknown>).type === 'string'
-          ? ((point.source as Record<string, unknown>).type as string)
-          : undefined
+        recordingMethod: typeof dataSource.recordingMethod === 'string' ? dataSource.recordingMethod : undefined,
+        platform: typeof dataSource.platform === 'string' ? dataSource.platform : undefined
       }
     : undefined;
 
-  return { id, startTime, endTime, type, activeMinutes, distance, totalCalories, source };
-}
-
-function numericValue(raw: unknown): number | undefined {
-  if (typeof raw === 'number') {
-    return raw;
-  }
-  if (raw && typeof raw === 'object') {
-    const v = (raw as Record<string, unknown>).value;
-    if (typeof v === 'number') {
-      return v;
-    }
-  }
-  return undefined;
+  return {
+    id,
+    startTime,
+    endTime,
+    exerciseType,
+    displayName,
+    activeDuration,
+    caloriesKcal,
+    distanceMillimeters,
+    source
+  };
 }

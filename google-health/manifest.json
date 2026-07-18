@@ -1,7 +1,7 @@
 {
   "id": "google-health-sync",
   "name": "Google Health",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Import Google Health exercise sessions as Timesheet time entries",
   "longDescription": "Reads workout sessions from Google Health and creates a Timesheet task on the project mapped to the corresponding exercise type. Read-only: no data is written back to Google Health.",
   "icon": "google-health",
@@ -15,7 +15,7 @@
       "oauth": {
         "authorizeUrl": "https://accounts.google.com/o/oauth2/v2/auth",
         "tokenUrl": "https://oauth2.googleapis.com/token",
-        "scopes": ["https://www.googleapis.com/auth/health"],
+        "scopes": ["https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly"],
         "authorizationParams": {
           "access_type": "offline",
           "prompt": "consent"

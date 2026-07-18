@@ -6,7 +6,13 @@ import {
   TaskUpdateInput,
   ToDoCreateInput,
   ToDoDto,
-  ToDoUpdateInput
+  ToDoUpdateInput,
+  getLastUpdateMillis,
+  isAlreadySyncedLocalChange,
+  isStaleExternalChange,
+  releaseStateLock,
+  syncMetadataStamp,
+  tryAcquireStateLock
 } from '@timesheet/integration-sdk';
 import { ClickUpClient } from './clickupClient';
 import {
@@ -23,6 +29,10 @@ const USER_ENTITY = 'user';
 const TASK_ENTITY = 'task';
 const TODO_ENTITY = 'todo';
 const SYNC_STATE_KEY = 'clickup:last-sync-time';
+// Import locks close the webhook-vs-full-sync race on first import; held for
+// the TTL (not released on success) so duplicate webhook deliveries stay
+// suppressed until the new mapping is visible everywhere.
+const IMPORT_LOCK_TTL_SECONDS = 60 * 60;
 
 export interface ClickUpSyncResult {
   system: string;
@@ -114,6 +124,12 @@ export async function syncTodoToClickUp(
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'already-deleted' } };
   }
 
+  // Echo guard: a change not newer than our own last write for this todo is
+  // the event fired by that write — syncing it back would ping-pong forever.
+  if (todoMapping?.externalId && isAlreadySyncedLocalChange(todoMapping.metadata, getLastUpdateMillis(todo))) {
+    return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'already-synced-todo-change', todoId: todo.id } };
+  }
+
   const payload = buildClickUpTaskPayload(todo);
 
   let external: ClickUpTask;
@@ -141,8 +157,12 @@ export async function syncTodoToClickUp(
     externalLabel: external.name ?? todo.name,
     metadata: {
       listId,
-      dateUpdated: external.date_updated ?? '',
-      url: external.url ?? ''
+      url: external.url ?? '',
+      ...syncMetadataStamp({
+        localLastUpdateMillis: getLastUpdateMillis(todo),
+        externalUpdatedAt: external.date_updated,
+        externalUpdatedKey: 'dateUpdated'
+      })
     },
     syncStatus: 'SYNCED'
   };
@@ -223,6 +243,11 @@ export async function syncTaskToClickUp(
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'already-deleted' } };
   }
 
+  // Echo guard: skip the event fired by our own inbound entry import/update.
+  if (taskMapping?.externalId && isAlreadySyncedLocalChange(taskMapping.metadata, getLastUpdateMillis(task))) {
+    return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'already-synced-task-change', taskId: task.id } };
+  }
+
   let payload: Record<string, unknown>;
   try {
     payload = buildClickUpTimeEntryPayload(task);
@@ -280,7 +305,11 @@ export async function syncTaskToClickUp(
     metadata: {
       teamId,
       tid: payload.tid ? String(payload.tid) : '',
-      updatedAt: external.at ? String(external.at) : ''
+      ...syncMetadataStamp({
+        localLastUpdateMillis: getLastUpdateMillis(task),
+        externalUpdatedAt: external.at ? String(external.at) : undefined,
+        externalUpdatedKey: 'updatedAt'
+      })
     },
     syncStatus: 'SYNCED'
   };
@@ -494,13 +523,29 @@ async function syncSingleExternalTask(
   const status = mapClickUpStatusToLocal(external.status?.type);
 
   if (!todoMapping?.localId) {
-    const created = await context.data.createTodo({
-      projectId: projectMapping.localId,
-      name,
-      description,
-      dueDate,
-      status
-    } as ToDoCreateInput);
+    // Import lock: a webhook delivery racing a full sync must not create the
+    // same todo twice. Held for the TTL; released only when the create fails.
+    const lockKey = `import:todo:${external.id}`;
+    if (!(await tryAcquireStateLock(context.state, lockKey, IMPORT_LOCK_TTL_SECONDS))) {
+      context.logger.info('ClickUp task import already in progress, skipping duplicate create', {
+        externalId: external.id
+      });
+      return false;
+    }
+
+    let created: ToDoDto;
+    try {
+      created = await context.data.createTodo({
+        projectId: projectMapping.localId,
+        name,
+        description,
+        dueDate,
+        status
+      } as ToDoCreateInput);
+    } catch (err) {
+      await releaseStateLock(context.state, lockKey);
+      throw err;
+    }
 
     await context.mappings.upsert({
       system: SYSTEM,
@@ -510,8 +555,12 @@ async function syncSingleExternalTask(
       externalLabel: external.name ?? external.id,
       metadata: {
         listId: extractListId(projectMapping.externalId) ?? '',
-        dateUpdated: external.date_updated ?? '',
-        url: external.url ?? ''
+        url: external.url ?? '',
+        ...syncMetadataStamp({
+          localLastUpdateMillis: getLastUpdateMillis(created),
+          externalUpdatedAt: external.date_updated,
+          externalUpdatedKey: 'dateUpdated'
+        })
       },
       syncStatus: 'SYNCED'
     });
@@ -519,13 +568,25 @@ async function syncSingleExternalTask(
     return true;
   }
 
-  const existing = await context.data.getTodo(todoMapping.localId);
-  const externalUpdatedAt = external.date_updated ? Number(external.date_updated) : 0;
-  if (existing?.lastUpdate && externalUpdatedAt > 0 && externalUpdatedAt <= existing.lastUpdate) {
+  // Echo guard: an external change not newer than what this mapping already
+  // recorded is the echo of our own outbound write (or a redelivery).
+  if (isStaleExternalChange({
+    metadata: todoMapping.metadata,
+    metadataKey: 'dateUpdated',
+    externalUpdatedAt: external.date_updated
+  })) {
     return false;
   }
 
-  await context.data.updateTodo(todoMapping.localId, {
+  const existing = await context.data.getTodo(todoMapping.localId);
+  if (isStaleExternalChange({
+    externalUpdatedAt: external.date_updated,
+    localLastUpdateMillis: getLastUpdateMillis(existing)
+  })) {
+    return false;
+  }
+
+  const updated = await context.data.updateTodo(todoMapping.localId, {
     name,
     description,
     dueDate,
@@ -540,8 +601,12 @@ async function syncSingleExternalTask(
     externalLabel: external.name ?? external.id,
     metadata: {
       listId: extractListId(projectMapping.externalId) ?? '',
-      dateUpdated: external.date_updated ?? '',
-      url: external.url ?? ''
+      url: external.url ?? '',
+      ...syncMetadataStamp({
+        localLastUpdateMillis: getLastUpdateMillis(updated),
+        externalUpdatedAt: external.date_updated,
+        externalUpdatedKey: 'dateUpdated'
+      })
     },
     syncStatus: 'SYNCED'
   });

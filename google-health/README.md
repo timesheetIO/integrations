@@ -10,7 +10,7 @@ Reads workout sessions from Google Health and creates a Timesheet task on the pr
 
 ## Authentication
 
-OAuth 2.0 against Google, scope `health`.
+OAuth 2.0 against Google, scope `https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly` (the plugin never writes to Google Health).
 
 ## Configuration
 
@@ -29,6 +29,11 @@ OAuth 2.0 against Google, scope `health`.
 - **Cleanup on Task Delete** (event): removes workout mappings when imported tasks are deleted in Timesheet, so a later sync can re-import them.
 - **Hourly Workout Sync** (hourly): pulls new Google Health exercises and creates Timesheet tasks.
 - **Manual Sync** (user action): triggers an inbound sync from the integration settings page.
+
+## Sync behavior
+
+- Incremental syncs filter on `exercise.interval.start_time` from the last successful sync, minus a 48 hour overlap window so workouts uploaded late by a device (watch offline, phone syncs hours later) are still picked up. Already imported workouts are skipped via the `workout` mapping table.
+- The sync cursor only advances on clean runs. When individual imports fail the run reports `partial` and keeps the previous cursor, so the failed workouts are retried on the next run.
 
 ## Development
 

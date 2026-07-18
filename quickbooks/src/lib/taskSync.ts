@@ -3,7 +3,13 @@ import {
   MappingRecord,
   TaskCreateInput,
   TaskDto,
-  TaskUpdateInput
+  TaskUpdateInput,
+  getLastUpdateMillis,
+  isAlreadySyncedLocalChange,
+  isStaleExternalChange,
+  readMetadataNumber,
+  releaseStateLock,
+  tryAcquireStateLock
 } from '@timesheet/integration-sdk';
 import { QuickBooksClient } from './quickbooksClient';
 import {
@@ -93,17 +99,14 @@ export async function syncTaskToQuickBooks(
   const client = await getOrCreateClient(context, input?.realmId);
   const taskMapping = await getMapping(context, caches?.taskMappingByLocalId, TASK_ENTITY, task.id);
 
-  if (!task.deleted && taskMapping?.externalId) {
-    const mappedTaskUpdatedAt = readMetadataNumber(taskMapping.metadata ?? {}, 'timesheetUpdatedAt');
-    const taskUpdatedAt = getTaskLastUpdateMillis(task);
-    if (mappedTaskUpdatedAt > 0 && taskUpdatedAt > 0 && taskUpdatedAt <= mappedTaskUpdatedAt) {
-      return {
-        system: SYSTEM,
-        status: 'skipped',
-        syncedCount: 0,
-        details: { reason: 'already-synced-task-change', taskId: task.id }
-      };
-    }
+  if (!task.deleted && taskMapping?.externalId
+      && isAlreadySyncedLocalChange(taskMapping.metadata, getLastUpdateMillis(task))) {
+    return {
+      system: SYSTEM,
+      status: 'skipped',
+      syncedCount: 0,
+      details: { reason: 'already-synced-task-change', taskId: task.id }
+    };
   }
 
   if (task.deleted) {
@@ -172,7 +175,7 @@ export async function syncTaskToQuickBooks(
       txnDate: external.TxnDate,
       quickBooksUpdatedAt: getExternalUpdatedAt(external)
         || readMetadataNumber(taskMapping?.metadata ?? {}, 'quickBooksUpdatedAt'),
-      timesheetUpdatedAt: getTaskLastUpdateMillis(task)
+      timesheetUpdatedAt: getLastUpdateMillis(task)
     }),
     syncStatus: 'SYNCED'
   };
@@ -510,18 +513,12 @@ async function syncSingleExternalActivity(
 
   if (!taskMapping?.localId) {
     const importLockKey = getTimeActivityImportLockStateKey(activity);
-    try {
-      const lockOptions = { ttlSeconds: TIME_ACTIVITY_IMPORT_LOCK_TTL_SECONDS, ifAbsent: true };
-      await context.state.set(importLockKey, Date.now(), lockOptions);
-    } catch (err) {
-      if (isStateConflictError(err)) {
-        context.logger.info('QuickBooks time activity import already in progress, skipping duplicate create', {
-          timeActivityId: activity.Id,
-          updated: getExternalUpdatedAt(activity)
-        });
-        return false;
-      }
-      throw err;
+    if (!(await tryAcquireStateLock(context.state, importLockKey, TIME_ACTIVITY_IMPORT_LOCK_TTL_SECONDS))) {
+      context.logger.info('QuickBooks time activity import already in progress, skipping duplicate create', {
+        timeActivityId: activity.Id,
+        updated: getExternalUpdatedAt(activity)
+      });
+      return false;
     }
 
     let created;
@@ -540,14 +537,7 @@ async function syncSingleExternalActivity(
       // No task was created — release the lock so the retry can import the
       // activity. Otherwise the retry skips it as a duplicate and the sync
       // cursor advances past it, losing the activity until it is edited again.
-      try {
-        await context.state.delete(importLockKey);
-      } catch (cleanupErr) {
-        context.logger.warn('Failed to release time activity import lock after create failure', {
-          timeActivityId: activity.Id,
-          error: String(cleanupErr)
-        });
-      }
+      await releaseStateLock(context.state, importLockKey);
       throw err;
     }
     const createdTask = created as TaskDto;
@@ -556,7 +546,7 @@ async function syncSingleExternalActivity(
       employeeId: externalUserId,
       syncToken: activity.SyncToken,
       quickBooksUpdatedAt: getExternalUpdatedAt(activity),
-      timesheetUpdatedAt: getTaskLastUpdateMillis(createdTask) || Date.now()
+      timesheetUpdatedAt: getLastUpdateMillis(createdTask) || Date.now()
     });
 
     await context.mappings.upsert({
@@ -573,13 +563,19 @@ async function syncSingleExternalActivity(
   }
 
   const externalUpdatedAt = getExternalUpdatedAt(activity);
-  const mappedExternalUpdatedAt = readMetadataNumber(taskMapping.metadata ?? {}, 'quickBooksUpdatedAt');
-  if (externalUpdatedAt > 0 && mappedExternalUpdatedAt > 0 && externalUpdatedAt <= mappedExternalUpdatedAt) {
+  if (isStaleExternalChange({
+    metadata: taskMapping.metadata,
+    metadataKey: 'quickBooksUpdatedAt',
+    externalUpdatedAt
+  })) {
     return false;
   }
 
   const existing = await context.data.getTask(taskMapping.localId);
-  if (existing?.lastUpdate && externalUpdatedAt > 0 && externalUpdatedAt <= existing.lastUpdate) {
+  if (isStaleExternalChange({
+    externalUpdatedAt,
+    localLastUpdateMillis: getLastUpdateMillis(existing)
+  })) {
     return false;
   }
 
@@ -598,7 +594,7 @@ async function syncSingleExternalActivity(
     employeeId: externalUserId,
     syncToken: activity.SyncToken,
     quickBooksUpdatedAt: externalUpdatedAt,
-    timesheetUpdatedAt: getTaskLastUpdateMillis(updatedTask) || Date.now()
+    timesheetUpdatedAt: getLastUpdateMillis(updatedTask) || Date.now()
   });
 
   await context.mappings.upsert({
@@ -867,24 +863,6 @@ function buildTaskMappingMetadata(input: {
       ? { timesheetUpdatedAt: String(Math.floor(input.timesheetUpdatedAt)) }
       : {})
   };
-}
-
-function getTaskLastUpdateMillis(task?: Partial<TaskDto> | null): number {
-  const value = Number(task?.lastUpdate);
-  return Number.isFinite(value) && value > 0 ? value : 0;
-}
-
-function readMetadataNumber(metadata: Record<string, unknown>, key: string): number {
-  const raw = metadata[key];
-  const value = typeof raw === 'number' ? raw : Number(raw);
-  return Number.isFinite(value) && value > 0 ? value : 0;
-}
-
-function isStateConflictError(err: unknown): boolean {
-  const message = String(err);
-  return message.includes('Timesheet API request failed (409)')
-    || message.includes('StateConflict')
-    || message.includes('State key already exists');
 }
 
 function getTimeActivityImportLockStateKey(activity: QuickBooksTimeActivity): string {

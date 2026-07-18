@@ -1,0 +1,275 @@
+{
+  "id": "freshbooks-sync",
+  "name": "FreshBooks Sync",
+  "version": "1.0.0",
+  "description": "Synchronize time entries with FreshBooks",
+  "longDescription": "Bidirectional synchronization between Timesheet tasks and FreshBooks time entries. Timesheet projects map to FreshBooks projects and Timesheet users map to FreshBooks team members, so logged time lands on the right project and teammate in FreshBooks for billing.",
+  "icon": "freshbooks",
+  "category": "accounting",
+  "tags": [
+    "sync",
+    "timesheet",
+    "freshbooks",
+    "time-tracking"
+  ],
+  "dataAccess": [
+    "projects",
+    "tasks",
+    "colleagues"
+  ],
+  "externalAuth": [
+    {
+      "id": "freshbooks",
+      "type": "oauth2",
+      "oauth": {
+        "authorizeUrl": "https://auth.freshbooks.com/oauth/authorize",
+        "tokenUrl": "https://api.freshbooks.com/auth/oauth/token",
+        "scopes": [
+          "user:profile:read",
+          "user:time_entries:read",
+          "user:time_entries:write",
+          "user:projects:read",
+          "user:clients:read",
+          "user:billable_items:read",
+          "user:teams:read"
+        ]
+      }
+    }
+  ],
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "syncDirection": {
+        "type": "string",
+        "title": "Sync Direction",
+        "enum": [
+          "bidirectional",
+          "timesheet-to-freshbooks",
+          "freshbooks-to-timesheet"
+        ],
+        "default": "bidirectional",
+        "x-ui-widget": "radio"
+      },
+      "businessId": {
+        "type": "string",
+        "title": "FreshBooks Business",
+        "x-ui-help": "Optional. When the connected account belongs to more than one FreshBooks business, set the business id to sync against."
+      }
+    },
+    "required": [
+      "syncDirection"
+    ]
+  },
+  "mappingSchema": {
+    "system": "freshbooks",
+    "mappings": [
+      {
+        "id": "projects",
+        "title": "Project Mapping",
+        "description": "Map Timesheet projects to FreshBooks projects",
+        "localEntity": {
+          "type": "project",
+          "label": "Timesheet Project",
+          "display": "{{title}}"
+        },
+        "externalEntity": {
+          "type": "project",
+          "label": "FreshBooks Project",
+          "fetchAction": "list-external-projects"
+        },
+        "required": true,
+        "minMappings": 1
+      },
+      {
+        "id": "users",
+        "title": "User Mapping",
+        "description": "Map Timesheet users to FreshBooks team members",
+        "localEntity": {
+          "type": "user",
+          "label": "Timesheet User",
+          "display": "{{displayName}}"
+        },
+        "externalEntity": {
+          "type": "teammember",
+          "label": "FreshBooks Team Member",
+          "fetchAction": "list-external-users"
+        },
+        "required": true,
+        "minMappings": 1
+      },
+      {
+        "id": "rates",
+        "title": "Rate Mapping",
+        "description": "Map Timesheet rates to FreshBooks services",
+        "localEntity": {
+          "type": "rate",
+          "label": "Timesheet Rate",
+          "display": "{{title}}"
+        },
+        "externalEntity": {
+          "type": "service",
+          "label": "FreshBooks Service",
+          "fetchAction": "list-external-services"
+        },
+        "required": false
+      }
+    ]
+  },
+  "triggers": [
+    {
+      "id": "task-changed",
+      "type": "event",
+      "mode": "sync",
+      "name": "Task Changed",
+      "description": "Sync task create/update/delete events to FreshBooks",
+      "events": [
+        "task.create",
+        "task.update",
+        "task.delete"
+      ],
+      "configurable": true,
+      "actionId": "handle-sync-batch"
+    },
+    {
+      "id": "integration-webhook",
+      "type": "webhook",
+      "name": "FreshBooks Webhook",
+      "description": "Receive inbound time entry changes from FreshBooks",
+      "configurable": false,
+      "actionId": "handle-webhook",
+      "webhook": {
+        "signature": {
+          "header": "x-freshbooks-hmac-sha256",
+          "algorithm": "hmac-sha256",
+          "secretConfigKey": "webhookSecret"
+        }
+      }
+    },
+    {
+      "id": "full-sync",
+      "type": "schedule",
+      "mode": "sync",
+      "name": "Scheduled Full Sync",
+      "description": "Run a complete reconciliation sync",
+      "schedule": "0 2 * * *",
+      "timezone": "UTC",
+      "configurable": true,
+      "events": [
+        "task.create",
+        "task.update",
+        "task.delete"
+      ],
+      "actionId": "handle-sync-batch"
+    },
+    {
+      "id": "manual-sync",
+      "type": "user_action",
+      "name": "Manual Sync",
+      "description": "Run a full sync from settings",
+      "userAction": {
+        "label": "Sync Now",
+        "placement": "settings"
+      },
+      "actionId": "run-full-sync"
+    },
+    {
+      "id": "register-webhooks-action",
+      "type": "user_action",
+      "name": "Register Webhooks",
+      "description": "Register the FreshBooks callbacks for real-time inbound sync",
+      "userAction": {
+        "label": "Register Webhooks",
+        "placement": "settings"
+      },
+      "actionId": "register-webhooks"
+    }
+  ],
+  "actions": [
+    {
+      "id": "sync-task-to-external",
+      "name": "Sync task to FreshBooks",
+      "handler": "syncTaskToExternal"
+    },
+    {
+      "id": "handle-sync-batch",
+      "name": "Handle sync batch",
+      "handler": "handleSyncBatch"
+    },
+    {
+      "id": "sync-task-from-external",
+      "name": "Sync task from FreshBooks",
+      "handler": "syncTaskFromExternal",
+      "internal": true
+    },
+    {
+      "id": "handle-webhook",
+      "handler": "handleWebhook",
+      "internal": true
+    },
+    {
+      "id": "run-full-sync",
+      "name": "Run full sync",
+      "handler": "runFullSync"
+    },
+    {
+      "id": "register-webhooks",
+      "name": "Register webhooks",
+      "handler": "registerWebhooks"
+    },
+    {
+      "id": "test-connection",
+      "name": "Test connection",
+      "handler": "testConnection"
+    },
+    {
+      "id": "list-external-projects",
+      "handler": "listExternalProjects",
+      "internal": true
+    },
+    {
+      "id": "list-external-users",
+      "handler": "listExternalUsers",
+      "internal": true
+    },
+    {
+      "id": "list-external-services",
+      "handler": "listExternalServices",
+      "internal": true
+    }
+  ],
+  "pages": [
+    {
+      "id": "dashboard",
+      "title": "Sync Dashboard",
+      "icon": "chart-bar",
+      "layout": "dashboard",
+      "widgets": [
+        {
+          "id": "last-sync",
+          "type": "metric",
+          "title": "Last Sync"
+        },
+        {
+          "id": "sync-stats",
+          "type": "metric",
+          "title": "Sync Statistics"
+        },
+        {
+          "id": "connection-health",
+          "type": "metric",
+          "title": "Connection Health"
+        },
+        {
+          "id": "manual-sync-btn",
+          "type": "action_button",
+          "title": "Manual Sync",
+          "config": {
+            "actionId": "run-full-sync",
+            "label": "Run Full Sync",
+            "variant": "primary"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -4,9 +4,11 @@ import type { IntegrationContext } from '@timesheet/integration-sdk';
 
 import * as asanaHandlers from '../asana/src';
 import * as clickupHandlers from '../clickup/src';
+import * as freshbooksHandlers from '../freshbooks/src';
 import * as googleCalendarHandlers from '../google-calendar/src';
 import * as googleHealthHandlers from '../google-health/src';
 import * as mondayHandlers from '../monday/src';
+import * as notionHandlers from '../notion/src';
 import * as outlookCalendarHandlers from '../outlook-calendar/src';
 import * as quickbooksHandlers from '../quickbooks/src';
 import * as xeroHandlers from '../xero/src';
@@ -59,6 +61,16 @@ const pluginFixtures: PluginFixture[] = [
     slug: 'quickbooks',
     manifestPath: path.resolve(__dirname, '../quickbooks/manifest.json'),
     handlers: quickbooksHandlers
+  },
+  {
+    slug: 'freshbooks',
+    manifestPath: path.resolve(__dirname, '../freshbooks/manifest.json'),
+    handlers: freshbooksHandlers
+  },
+  {
+    slug: 'notion',
+    manifestPath: path.resolve(__dirname, '../notion/manifest.json'),
+    handlers: notionHandlers
   }
 ];
 
@@ -69,7 +81,9 @@ const createContext = (): IntegrationContext<{ syncDirection: string }> => ({
   data: ({
     getTask: async () => {
       throw new Error('not implemented in shared fixture');
-    }
+    },
+    listTasks: async () => ({ items: [], params: {}, taskStatistic: {} }),
+    listTodos: async () => ({ items: [], params: {}, todoStatistic: { open: 0, closed: 0 } })
   } as unknown) as IntegrationContext['data'],
   credentials: {
     getAccessToken: async () => 'token',
@@ -131,6 +145,32 @@ beforeAll(() => {
     if (requestUrl.includes('quickbooks.api.intuit.com') && requestUrl.includes('timeactivity')) {
       return createFetchResponse({ QueryResponse: { TimeActivity: [] } });
     }
+    if (requestUrl.includes('api.notion.com')) {
+      if (requestUrl.includes('/v1/users/me')) {
+        return createFetchResponse({ object: 'user', id: 'notion-bot-1', type: 'bot' });
+      }
+      if (requestUrl.includes('/query')) {
+        return createFetchResponse({ results: [], has_more: false, next_cursor: null });
+      }
+      if (requestUrl.includes('/v1/databases/')) {
+        return createFetchResponse({
+          id: 'external-project-1',
+          properties: { Name: { id: 'ttl', name: 'Name', type: 'title' } }
+        });
+      }
+      if (requestUrl.includes('/v1/search')) {
+        return createFetchResponse({ results: [], has_more: false, next_cursor: null });
+      }
+      return createFetchResponse({});
+    }
+    if (requestUrl.includes('/auth/api/v1/users/me')) {
+      return createFetchResponse({
+        response: { business_memberships: [{ business: { id: 111, account_id: 'acc-1', active: true } }] }
+      });
+    }
+    if (requestUrl.includes('/timetracking/business/') && requestUrl.includes('/time_entries')) {
+      return createFetchResponse({ time_entries: [], meta: { pages: 1 } });
+    }
     if (requestUrl.includes('www.googleapis.com/calendar/v3/users/me/calendarList')) {
       return createFetchResponse({ items: [{ id: 'primary', summary: 'Primary Calendar' }] });
     }
@@ -142,6 +182,12 @@ beforeAll(() => {
     }
     if (requestUrl.includes('api.clickup.com/api/v2/list/') && requestUrl.includes('/task')) {
       return createFetchResponse({ tasks: [], last_page: true });
+    }
+    if (requestUrl.includes('app.asana.com/api/1.0/users/me')) {
+      return createFetchResponse({ data: { gid: 'asana-user-1' } });
+    }
+    if (requestUrl.includes('app.asana.com/api/1.0')) {
+      return createFetchResponse({ data: [] });
     }
     if (requestUrl.includes('api.monday.com/v2')) {
       const query = typeof init?.body === 'string' ? init.body : '';
@@ -186,6 +232,16 @@ describe('plugin manifests', () => {
       for (const action of manifest.actions) {
         expect(typeof fixture.handlers[action.handler]).toBe('function');
       }
+    });
+
+    it(`${fixture.slug} manifest version matches package version`, () => {
+      const manifest = JSON.parse(fs.readFileSync(fixture.manifestPath, 'utf8')) as { version: string };
+      const packagePath = path.join(path.dirname(fixture.manifestPath), 'package.json');
+      const packageJson = JSON.parse(fs.readFileSync(packagePath, 'utf8')) as { version: string };
+
+      // The runtime loads plugins by package name + version + integrity, while
+      // the backend surfaces the manifest version — they must stay in lockstep.
+      expect(manifest.version).toBe(packageJson.version);
     });
   }
 });

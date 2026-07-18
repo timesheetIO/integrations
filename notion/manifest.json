@@ -1,0 +1,236 @@
+{
+  "id": "notion-sync",
+  "name": "Notion Sync",
+  "version": "1.0.0",
+  "description": "Synchronize Timesheet todos and time entries with Notion databases",
+  "longDescription": "Bidirectional synchronization between Timesheet and Notion. Timesheet todos are mirrored 1:1 with pages in the mapped Notion database, and Timesheet time entries (tasks) sync as rows of an optional time-log database, related to the todo's page. Changes made in Notion flow back through webhooks and scheduled syncs.",
+  "icon": "notion",
+  "category": "project-management",
+  "tags": [
+    "sync",
+    "timesheet",
+    "notion",
+    "project-management"
+  ],
+  "dataAccess": [
+    "projects",
+    "tasks",
+    "todos",
+    "settings"
+  ],
+  "externalAuth": [
+    {
+      "id": "notion",
+      "type": "oauth2",
+      "oauth": {
+        "authorizeUrl": "https://api.notion.com/v1/oauth/authorize",
+        "tokenUrl": "https://api.notion.com/v1/oauth/token",
+        "scopes": []
+      }
+    }
+  ],
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "syncDirection": {
+        "type": "string",
+        "title": "Sync Direction",
+        "enum": [
+          "bidirectional",
+          "timesheet-to-notion",
+          "notion-to-timesheet"
+        ],
+        "default": "bidirectional",
+        "x-ui-widget": "radio"
+      },
+      "timeLogDatabaseId": {
+        "type": "string",
+        "title": "Time-Log Database",
+        "x-ui-help": "Optional. Notion database id for time entries. When set, Timesheet tasks sync as rows of this database (title, date range, hours, and a relation to the todo's page)."
+      },
+      "statusProperty": {
+        "type": "string",
+        "title": "Status Property",
+        "x-ui-help": "Optional. Property name used for todo status. Auto-detected (first status or checkbox property) when empty."
+      },
+      "dueDateProperty": {
+        "type": "string",
+        "title": "Due Date Property",
+        "x-ui-help": "Optional. Date property name used for todo due dates. Auto-detected (first date property) when empty."
+      }
+    },
+    "required": [
+      "syncDirection"
+    ]
+  },
+  "mappingSchema": {
+    "system": "notion",
+    "mappings": [
+      {
+        "id": "projects",
+        "title": "Project Mapping",
+        "description": "Map Timesheet projects to Notion databases",
+        "localEntity": {
+          "type": "project",
+          "label": "Timesheet Project",
+          "display": "{{title}}"
+        },
+        "externalEntity": {
+          "type": "database",
+          "label": "Notion Database",
+          "fetchAction": "list-external-projects"
+        },
+        "required": true,
+        "minMappings": 1
+      }
+    ]
+  },
+  "triggers": [
+    {
+      "id": "timesheet-changed",
+      "type": "event",
+      "mode": "sync",
+      "name": "Timesheet Changed",
+      "description": "Sync todo and time entry create/update/delete events to Notion",
+      "events": [
+        "todo.create",
+        "todo.update",
+        "todo.delete",
+        "task.create",
+        "task.update",
+        "task.delete"
+      ],
+      "configurable": true,
+      "actionId": "handle-sync-batch"
+    },
+    {
+      "id": "integration-webhook",
+      "type": "webhook",
+      "name": "Notion Webhook",
+      "description": "Receive inbound page changes from Notion",
+      "configurable": false,
+      "actionId": "handle-webhook",
+      "webhook": {
+        "signature": {
+          "header": "x-notion-signature",
+          "algorithm": "hmac-sha256",
+          "secretConfigKey": "webhookSecret"
+        }
+      }
+    },
+    {
+      "id": "full-sync",
+      "type": "schedule",
+      "mode": "sync",
+      "name": "Scheduled Full Sync",
+      "description": "Run a complete reconciliation sync",
+      "schedule": "0 2 * * *",
+      "timezone": "UTC",
+      "configurable": true,
+      "events": [
+        "todo.create",
+        "todo.update",
+        "todo.delete",
+        "task.create",
+        "task.update",
+        "task.delete"
+      ],
+      "actionId": "handle-sync-batch"
+    },
+    {
+      "id": "manual-sync",
+      "type": "user_action",
+      "name": "Manual Sync",
+      "description": "Run a full sync from settings",
+      "userAction": {
+        "label": "Sync Now",
+        "placement": "settings"
+      },
+      "actionId": "run-full-sync"
+    }
+  ],
+  "actions": [
+    {
+      "id": "sync-todo-to-external",
+      "name": "Sync todo to Notion page",
+      "handler": "syncTodoToExternal"
+    },
+    {
+      "id": "sync-todo-from-external",
+      "name": "Sync todo from Notion payload",
+      "handler": "syncTodoFromExternal",
+      "internal": true
+    },
+    {
+      "id": "sync-task-to-external",
+      "name": "Sync time entry to Notion",
+      "handler": "syncTaskToExternal"
+    },
+    {
+      "id": "sync-task-from-external",
+      "name": "Sync time entry from Notion",
+      "handler": "syncTaskFromExternal",
+      "internal": true
+    },
+    {
+      "id": "handle-sync-batch",
+      "name": "Handle sync batch",
+      "handler": "handleSyncBatch"
+    },
+    {
+      "id": "handle-webhook",
+      "handler": "handleWebhook",
+      "internal": true
+    },
+    {
+      "id": "run-full-sync",
+      "name": "Run full sync",
+      "handler": "runFullSync"
+    },
+    {
+      "id": "test-connection",
+      "name": "Test connection",
+      "handler": "testConnection"
+    },
+    {
+      "id": "list-external-projects",
+      "handler": "listExternalProjects",
+      "internal": true
+    }
+  ],
+  "pages": [
+    {
+      "id": "dashboard",
+      "title": "Sync Dashboard",
+      "icon": "chart-bar",
+      "layout": "dashboard",
+      "widgets": [
+        {
+          "id": "last-sync",
+          "type": "metric",
+          "title": "Last Sync"
+        },
+        {
+          "id": "sync-stats",
+          "type": "metric",
+          "title": "Sync Statistics"
+        },
+        {
+          "id": "connection-health",
+          "type": "metric",
+          "title": "Connection Health"
+        },
+        {
+          "id": "manual-sync-btn",
+          "type": "action_button",
+          "title": "Manual Sync",
+          "config": {
+            "actionId": "run-full-sync",
+            "label": "Run Full Sync",
+            "variant": "primary"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,13 +1,21 @@
 {
   "id": "google-calendar-sync",
   "name": "Google Calendar Sync",
-  "version": "1.4.11",
+  "version": "1.4.12",
   "description": "Synchronize Timesheet tasks with Google Calendar",
   "longDescription": "Bidirectional synchronization between Timesheet tasks and Google Calendar events.",
   "icon": "google-calendar",
   "category": "calendar",
-  "tags": ["sync", "timesheet", "google-calendar", "calendar"],
-  "dataAccess": ["projects", "tasks"],
+  "tags": [
+    "sync",
+    "timesheet",
+    "google-calendar",
+    "calendar"
+  ],
+  "dataAccess": [
+    "projects",
+    "tasks"
+  ],
   "externalAuth": [
     {
       "id": "google",
@@ -32,12 +40,18 @@
       "syncDirection": {
         "type": "string",
         "title": "Sync Direction",
-        "enum": ["bidirectional", "timesheet-to-google", "google-to-timesheet"],
+        "enum": [
+          "bidirectional",
+          "timesheet-to-google",
+          "google-to-timesheet"
+        ],
         "default": "bidirectional",
         "x-ui-widget": "radio"
       }
     },
-    "required": ["syncDirection"]
+    "required": [
+      "syncDirection"
+    ]
   },
   "mappingSchema": {
     "system": "google-calendar",
@@ -68,7 +82,11 @@
       "mode": "sync",
       "name": "Task Changed",
       "description": "Sync task create/update/delete events to Google Calendar",
-      "events": ["task.create", "task.update", "task.delete"],
+      "events": [
+        "task.create",
+        "task.update",
+        "task.delete"
+      ],
       "configurable": true,
       "actionId": "handle-sync-batch"
     },
@@ -90,7 +108,11 @@
       "schedule": "0 2 * * *",
       "timezone": "UTC",
       "configurable": true,
-      "events": ["task.create", "task.update", "task.delete"],
+      "events": [
+        "task.create",
+        "task.update",
+        "task.delete"
+      ],
       "actionId": "handle-sync-batch"
     },
     {

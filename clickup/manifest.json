@@ -1,13 +1,25 @@
 {
   "id": "clickup-sync",
   "name": "ClickUp Sync",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "description": "Synchronize Timesheet tasks and todos with ClickUp",
   "longDescription": "Bidirectional synchronization between Timesheet and ClickUp. Timesheet ToDos are mirrored as ClickUp tasks inside the mapped ClickUp list, and Timesheet time entries are pushed as ClickUp time entries attached to the corresponding ClickUp task (or workspace-level when no ToDo is linked).",
   "icon": "clickup",
   "category": "project-management",
-  "tags": ["sync", "timesheet", "clickup", "project-management", "time-tracking"],
-  "dataAccess": ["projects", "tasks", "todos", "colleagues", "settings"],
+  "tags": [
+    "sync",
+    "timesheet",
+    "clickup",
+    "project-management",
+    "time-tracking"
+  ],
+  "dataAccess": [
+    "projects",
+    "tasks",
+    "todos",
+    "colleagues",
+    "settings"
+  ],
   "externalAuth": [
     {
       "id": "clickup",
@@ -25,7 +37,11 @@
       "syncDirection": {
         "type": "string",
         "title": "Sync Direction",
-        "enum": ["bidirectional", "timesheet-to-clickup", "clickup-to-timesheet"],
+        "enum": [
+          "bidirectional",
+          "timesheet-to-clickup",
+          "clickup-to-timesheet"
+        ],
         "default": "bidirectional",
         "x-ui-widget": "radio"
       },
@@ -36,7 +52,9 @@
         "x-ui-help": "Shared secret returned by ClickUp when registering the webhook. Required to verify inbound webhooks."
       }
     },
-    "required": ["syncDirection"]
+    "required": [
+      "syncDirection"
+    ]
   },
   "mappingSchema": {
     "system": "clickup",
@@ -61,7 +79,7 @@
       {
         "id": "users",
         "title": "User Mapping",
-        "description": "Map Timesheet users to ClickUp workspace members. Optional — only needed in multi-user workspaces and on ClickUp paid plans, where it lets each user's time entries appear under their own ClickUp account instead of the OAuth owner.",
+        "description": "Map Timesheet users to ClickUp workspace members. Optional \u2014 only needed in multi-user workspaces and on ClickUp paid plans, where it lets each user's time entries appear under their own ClickUp account instead of the OAuth owner.",
         "localEntity": {
           "type": "user",
           "label": "Timesheet User",

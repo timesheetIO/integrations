@@ -1,7 +1,7 @@
 {
   "id": "xero-sync",
   "name": "Xero Sync",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Timesheet Xero Sync plugin integration",
   "category": "accounting",
   "tags": ["sync", "timesheet", "xero"],

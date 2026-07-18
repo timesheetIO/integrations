@@ -6,7 +6,13 @@ import {
   TaskUpdateInput,
   ToDoCreateInput,
   ToDoDto,
-  ToDoUpdateInput
+  ToDoUpdateInput,
+  getLastUpdateMillis,
+  isAlreadySyncedLocalChange,
+  isStaleExternalChange,
+  releaseStateLock,
+  syncMetadataStamp,
+  tryAcquireStateLock
 } from '@timesheet/integration-sdk';
 import { MondayClient } from './mondayClient';
 import {
@@ -23,6 +29,10 @@ const TASK_ENTITY = 'task';
 const TODO_ENTITY = 'todo';
 const USER_ENTITY = 'user';
 const SYNC_STATE_KEY = 'monday:last-sync-time';
+// Import locks close the webhook-vs-full-sync race on first import; held for
+// the TTL (not released on success) so duplicate webhook deliveries stay
+// suppressed until the new mapping is visible everywhere.
+const IMPORT_LOCK_TTL_SECONDS = 60 * 60;
 const STATUS_COLUMN_ID = 'status';
 
 // Titles used when the plugin has to create its own date columns. monday.com
@@ -122,6 +132,12 @@ export async function syncTaskToMonday(
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'already-deleted' } };
   }
 
+  // Echo guard: a change not newer than our own last write for this task is
+  // the event fired by that write — syncing it back would ping-pong forever.
+  if (taskMapping?.externalId && isAlreadySyncedLocalChange(taskMapping.metadata, getLastUpdateMillis(task))) {
+    return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'already-synced-task-change', taskId: task.id } };
+  }
+
   // Attribute the item to the mapped monday.com user when available. Without a
   // user mapping the item is created/updated under the OAuth owner.
   let externalUserId: string | undefined;
@@ -197,7 +213,11 @@ export async function syncTaskToMonday(
       boardId: external.board?.id ?? projectBoardId,
       projectBoardId,
       parentItemId: parentItemId ?? '',
-      updatedAt: external.updated_at ?? ''
+      ...syncMetadataStamp({
+        localLastUpdateMillis: getLastUpdateMillis(task),
+        externalUpdatedAt: external.updated_at,
+        externalUpdatedKey: 'updatedAt'
+      })
     },
     syncStatus: 'SYNCED'
   };
@@ -266,6 +286,11 @@ export async function syncTodoToMonday(
     return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'already-deleted' } };
   }
 
+  // Echo guard: skip the event fired by our own inbound todo import/update.
+  if (todoMapping?.externalId && isAlreadySyncedLocalChange(todoMapping.metadata, getLastUpdateMillis(todo))) {
+    return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'already-synced-todo-change', todoId: todo.id } };
+  }
+
   const name = (todo.name?.trim() || `Timesheet todo ${todo.id}`).slice(0, 255);
   const cols = await ensureBoardColumns(context, client, boardId);
   const columnValues = buildTodoColumnValues(todo, cols);
@@ -295,7 +320,11 @@ export async function syncTodoToMonday(
     externalLabel: external.name ?? todo.name,
     metadata: {
       boardId,
-      updatedAt: external.updated_at ?? ''
+      ...syncMetadataStamp({
+        localLastUpdateMillis: getLastUpdateMillis(todo),
+        externalUpdatedAt: external.updated_at,
+        externalUpdatedKey: 'updatedAt'
+      })
     },
     syncStatus: 'SYNCED'
   };
@@ -648,12 +677,28 @@ async function syncInboundTaskFromSubitem(
   const description = external.name ?? '';
 
   if (!taskMapping?.localId) {
-    const created = await context.data.createTask({
-      projectId: projectMapping.localId,
-      startDateTime: dateRange.startDateTime,
-      endDateTime: dateRange.endDateTime,
-      description
-    } as TaskCreateInput);
+    // Import lock: a webhook delivery racing a full sync must not create the
+    // same task twice. Held for the TTL; released only when the create fails.
+    const lockKey = `import:task:${external.id}`;
+    if (!(await tryAcquireStateLock(context.state, lockKey, IMPORT_LOCK_TTL_SECONDS))) {
+      context.logger.info('monday.com subitem import already in progress, skipping duplicate create', {
+        externalId: external.id
+      });
+      return false;
+    }
+
+    let created: TaskDto;
+    try {
+      created = await context.data.createTask({
+        projectId: projectMapping.localId,
+        startDateTime: dateRange.startDateTime,
+        endDateTime: dateRange.endDateTime,
+        description
+      } as TaskCreateInput);
+    } catch (err) {
+      await releaseStateLock(context.state, lockKey);
+      throw err;
+    }
 
     await context.mappings.upsert({
       system: SYSTEM,
@@ -665,7 +710,11 @@ async function syncInboundTaskFromSubitem(
         boardId: external.board?.id ?? '',
         projectBoardId: projectMapping.externalId ?? '',
         parentItemId: external.parent_item?.id ?? '',
-        updatedAt: external.updated_at ?? ''
+        ...syncMetadataStamp({
+          localLastUpdateMillis: getLastUpdateMillis(created),
+          externalUpdatedAt: external.updated_at,
+          externalUpdatedKey: 'updatedAt'
+        })
       },
       syncStatus: 'SYNCED'
     });
@@ -673,13 +722,25 @@ async function syncInboundTaskFromSubitem(
     return true;
   }
 
-  const existing = await context.data.getTask(taskMapping.localId);
-  const externalUpdatedAt = parseMondayDateMs(external.updated_at);
-  if (existing?.lastUpdate && externalUpdatedAt && externalUpdatedAt <= existing.lastUpdate) {
+  // Echo guard: an external change not newer than what this mapping already
+  // recorded is the echo of our own outbound write (or a redelivery).
+  if (isStaleExternalChange({
+    metadata: taskMapping.metadata,
+    metadataKey: 'updatedAt',
+    externalUpdatedAt: external.updated_at
+  })) {
     return false;
   }
 
-  await context.data.updateTask(taskMapping.localId, {
+  const existing = await context.data.getTask(taskMapping.localId);
+  if (isStaleExternalChange({
+    externalUpdatedAt: external.updated_at,
+    localLastUpdateMillis: getLastUpdateMillis(existing)
+  })) {
+    return false;
+  }
+
+  const updated = await context.data.updateTask(taskMapping.localId, {
     projectId: projectMapping.localId,
     startDateTime: dateRange.startDateTime,
     endDateTime: dateRange.endDateTime,
@@ -696,7 +757,11 @@ async function syncInboundTaskFromSubitem(
       boardId: external.board?.id ?? '',
       projectBoardId: projectMapping.externalId ?? '',
       parentItemId: external.parent_item?.id ?? '',
-      updatedAt: external.updated_at ?? ''
+      ...syncMetadataStamp({
+        localLastUpdateMillis: getLastUpdateMillis(updated),
+        externalUpdatedAt: external.updated_at,
+        externalUpdatedKey: 'updatedAt'
+      })
     },
     syncStatus: 'SYNCED'
   });
@@ -724,13 +789,29 @@ async function syncInboundTodoFromItem(
   const status = mapMondayStatusToLocal(external.column_values);
 
   if (!todoMapping?.localId) {
-    const created = await context.data.createTodo({
-      projectId: projectMapping.localId,
-      name,
-      description: '',
-      dueDate,
-      status
-    } as ToDoCreateInput);
+    // Import lock: a webhook delivery racing a full sync must not create the
+    // same todo twice. Held for the TTL; released only when the create fails.
+    const lockKey = `import:todo:${external.id}`;
+    if (!(await tryAcquireStateLock(context.state, lockKey, IMPORT_LOCK_TTL_SECONDS))) {
+      context.logger.info('monday.com item import already in progress, skipping duplicate create', {
+        externalId: external.id
+      });
+      return false;
+    }
+
+    let created: ToDoDto;
+    try {
+      created = await context.data.createTodo({
+        projectId: projectMapping.localId,
+        name,
+        description: '',
+        dueDate,
+        status
+      } as ToDoCreateInput);
+    } catch (err) {
+      await releaseStateLock(context.state, lockKey);
+      throw err;
+    }
 
     await context.mappings.upsert({
       system: SYSTEM,
@@ -740,20 +821,36 @@ async function syncInboundTodoFromItem(
       externalLabel: external.name ?? external.id,
       metadata: {
         boardId: projectMapping.externalId ?? '',
-        updatedAt: external.updated_at ?? ''
+        ...syncMetadataStamp({
+          localLastUpdateMillis: getLastUpdateMillis(created),
+          externalUpdatedAt: external.updated_at,
+          externalUpdatedKey: 'updatedAt'
+        })
       },
       syncStatus: 'SYNCED'
     });
     return true;
   }
 
-  const existing = await context.data.getTodo(todoMapping.localId);
-  const externalUpdatedAt = parseMondayDateMs(external.updated_at);
-  if (existing?.lastUpdate && externalUpdatedAt && externalUpdatedAt <= existing.lastUpdate) {
+  // Echo guard: an external change not newer than what this mapping already
+  // recorded is the echo of our own outbound write (or a redelivery).
+  if (isStaleExternalChange({
+    metadata: todoMapping.metadata,
+    metadataKey: 'updatedAt',
+    externalUpdatedAt: external.updated_at
+  })) {
     return false;
   }
 
-  await context.data.updateTodo(todoMapping.localId, {
+  const existing = await context.data.getTodo(todoMapping.localId);
+  if (isStaleExternalChange({
+    externalUpdatedAt: external.updated_at,
+    localLastUpdateMillis: getLastUpdateMillis(existing)
+  })) {
+    return false;
+  }
+
+  const updated = await context.data.updateTodo(todoMapping.localId, {
     name,
     description: existing?.description ?? '',
     dueDate,
@@ -768,7 +865,11 @@ async function syncInboundTodoFromItem(
     externalLabel: external.name ?? external.id,
     metadata: {
       boardId: projectMapping.externalId ?? '',
-      updatedAt: external.updated_at ?? ''
+      ...syncMetadataStamp({
+        localLastUpdateMillis: getLastUpdateMillis(updated),
+        externalUpdatedAt: external.updated_at,
+        externalUpdatedKey: 'updatedAt'
+      })
     },
     syncStatus: 'SYNCED'
   });
@@ -1177,14 +1278,6 @@ function parseDate(value: string | undefined): Date | null {
   }
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function parseMondayDateMs(value: string | null | undefined): number | null {
-  if (!value) {
-    return null;
-  }
-  const parsed = Date.parse(value);
-  return Number.isNaN(parsed) ? null : parsed;
 }
 
 function getHeader(input: SyncInput, name: string): string | undefined {

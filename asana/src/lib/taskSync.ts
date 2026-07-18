@@ -6,7 +6,13 @@ import {
   TaskUpdateInput,
   ToDoCreateInput,
   ToDoDto,
-  ToDoUpdateInput
+  ToDoUpdateInput,
+  getLastUpdateMillis,
+  isAlreadySyncedLocalChange,
+  isStaleExternalChange,
+  releaseStateLock,
+  syncMetadataStamp,
+  tryAcquireStateLock
 } from '@timesheet/integration-sdk';
 import { AsanaClient } from './asanaClient';
 import {
@@ -22,6 +28,10 @@ const PROJECT_ENTITY = 'project';
 const TODO_ENTITY = 'todo';
 const TASK_ENTITY = 'task';
 const SYNC_STATE_KEY = 'asana:last-sync-time';
+// Import locks close the webhook-vs-full-sync race on first import; held for
+// the TTL (not released on success) so duplicate webhook deliveries stay
+// suppressed until the new mapping is visible everywhere.
+const IMPORT_LOCK_TTL_SECONDS = 60 * 60;
 
 const TODO_STATUS_OPEN = 0;
 const TODO_STATUS_CLOSED = 1;
@@ -114,6 +124,12 @@ export async function syncTodoToAsana(
     return skip({ reason: 'already-deleted' });
   }
 
+  // Echo guard: a change not newer than our own last write for this todo is
+  // the event fired by that write — syncing it back would ping-pong forever.
+  if (todoMapping?.externalId && isAlreadySyncedLocalChange(todoMapping.metadata, getLastUpdateMillis(todo))) {
+    return skip({ reason: 'already-synced-todo-change', todoId: todo.id });
+  }
+
   const payload = buildAsanaTaskPayloadFromTodo(todo);
 
   let external: AsanaTask;
@@ -135,7 +151,11 @@ export async function syncTodoToAsana(
     metadata: {
       projectId: projectMapping.externalId,
       localProjectId: projectId,
-      modifiedAt: external.modified_at ?? ''
+      ...syncMetadataStamp({
+        localLastUpdateMillis: getLastUpdateMillis(todo),
+        externalUpdatedAt: external.modified_at,
+        externalUpdatedKey: 'modifiedAt'
+      })
     },
     syncStatus: 'SYNCED'
   };
@@ -181,6 +201,12 @@ export async function syncTimesheetTaskToAsana(
 
   const taskMapping = await getMapping(context, caches?.taskMappingByLocalId, TASK_ENTITY, task.id);
   const client = getOrCreateClient(context);
+
+  // Echo guard: skip the event fired by our own inbound entry import/update.
+  if (!task.deleted && taskMapping?.externalId
+      && isAlreadySyncedLocalChange(taskMapping.metadata, getLastUpdateMillis(task))) {
+    return skip({ reason: 'already-synced-task-change', taskId: task.id });
+  }
 
   if (task.deleted) {
     if (taskMapping?.externalId) {
@@ -246,7 +272,8 @@ export async function syncTimesheetTaskToAsana(
       asanaTaskGid: todoMapping.externalId,
       todoId: localTodoId,
       durationMinutes: String(durationMinutes),
-      enteredOn
+      enteredOn,
+      ...syncMetadataStamp({ localLastUpdateMillis: getLastUpdateMillis(task) })
     },
     syncStatus: 'SYNCED'
   };
@@ -503,13 +530,29 @@ async function upsertLocalTodoFromAsanaTask(
   const dueDate = asanaTask.due_on ?? (asanaTask.due_at ? asanaTask.due_at.slice(0, 10) : undefined);
 
   if (!todoMapping?.localId) {
-    const created = await context.data.createTodo({
-      projectId: localProjectId,
-      name,
-      description,
-      status,
-      dueDate
-    } as ToDoCreateInput);
+    // Import lock: a webhook delivery racing a full sync must not create the
+    // same todo twice. Held for the TTL; released only when the create fails.
+    const lockKey = `import:todo:${asanaTask.gid}`;
+    if (!(await tryAcquireStateLock(context.state, lockKey, IMPORT_LOCK_TTL_SECONDS))) {
+      context.logger.info('Asana todo import already in progress, skipping duplicate create', {
+        externalId: asanaTask.gid
+      });
+      return false;
+    }
+
+    let created: ToDoDto;
+    try {
+      created = await context.data.createTodo({
+        projectId: localProjectId,
+        name,
+        description,
+        status,
+        dueDate
+      } as ToDoCreateInput);
+    } catch (err) {
+      await releaseStateLock(context.state, lockKey);
+      throw err;
+    }
 
     await context.mappings.upsert({
       system: SYSTEM,
@@ -520,20 +563,36 @@ async function upsertLocalTodoFromAsanaTask(
       metadata: {
         projectId: asanaTask.projects?.[0]?.gid ?? '',
         localProjectId,
-        modifiedAt: asanaTask.modified_at ?? ''
+        ...syncMetadataStamp({
+          localLastUpdateMillis: getLastUpdateMillis(created),
+          externalUpdatedAt: asanaTask.modified_at,
+          externalUpdatedKey: 'modifiedAt'
+        })
       },
       syncStatus: 'SYNCED'
     });
     return true;
   }
 
-  const existing = await context.data.getTodo(todoMapping.localId);
-  const externalUpdatedAt = asanaTask.modified_at ? Date.parse(asanaTask.modified_at) : 0;
-  if (existing?.lastUpdate && externalUpdatedAt > 0 && externalUpdatedAt <= existing.lastUpdate) {
+  // Echo guard: an external change not newer than what this mapping already
+  // recorded is the echo of our own outbound write (or a redelivery).
+  if (isStaleExternalChange({
+    metadata: todoMapping.metadata,
+    metadataKey: 'modifiedAt',
+    externalUpdatedAt: asanaTask.modified_at
+  })) {
     return false;
   }
 
-  await context.data.updateTodo(todoMapping.localId, {
+  const existing = await context.data.getTodo(todoMapping.localId);
+  if (isStaleExternalChange({
+    externalUpdatedAt: asanaTask.modified_at,
+    localLastUpdateMillis: getLastUpdateMillis(existing)
+  })) {
+    return false;
+  }
+
+  const updated = await context.data.updateTodo(todoMapping.localId, {
     name,
     description,
     status,
@@ -549,7 +608,11 @@ async function upsertLocalTodoFromAsanaTask(
     metadata: {
       projectId: asanaTask.projects?.[0]?.gid ?? '',
       localProjectId,
-      modifiedAt: asanaTask.modified_at ?? ''
+      ...syncMetadataStamp({
+        localLastUpdateMillis: getLastUpdateMillis(updated),
+        externalUpdatedAt: asanaTask.modified_at,
+        externalUpdatedKey: 'modifiedAt'
+      })
     },
     syncStatus: 'SYNCED'
   });
@@ -590,13 +653,29 @@ async function upsertLocalTaskFromAsanaEntry(
   });
 
   if (!taskMapping?.localId) {
-    const created = await context.data.createTask({
-      projectId: localProjectId,
-      todoId: todoMapping.localId,
-      startDateTime: dateRange.startDateTime,
-      endDateTime: dateRange.endDateTime,
-      description
-    } as TaskCreateInput);
+    // Import lock: a webhook delivery racing a full sync must not create the
+    // same task twice. Held for the TTL; released only when the create fails.
+    const lockKey = `import:task:${entry.gid}`;
+    if (!(await tryAcquireStateLock(context.state, lockKey, IMPORT_LOCK_TTL_SECONDS))) {
+      context.logger.info('Asana entry import already in progress, skipping duplicate create', {
+        externalId: entry.gid
+      });
+      return false;
+    }
+
+    let created: TaskDto;
+    try {
+      created = await context.data.createTask({
+        projectId: localProjectId,
+        todoId: todoMapping.localId,
+        startDateTime: dateRange.startDateTime,
+        endDateTime: dateRange.endDateTime,
+        description
+      } as TaskCreateInput);
+    } catch (err) {
+      await releaseStateLock(context.state, lockKey);
+      throw err;
+    }
 
     await context.mappings.upsert({
       system: SYSTEM,
@@ -608,7 +687,8 @@ async function upsertLocalTaskFromAsanaEntry(
         asanaTaskGid,
         todoId: todoMapping.localId,
         durationMinutes: String(entry.duration_minutes ?? 0),
-        enteredOn: entry.entered_on ?? ''
+        enteredOn: entry.entered_on ?? '',
+        ...syncMetadataStamp({ localLastUpdateMillis: getLastUpdateMillis(created) })
       },
       syncStatus: 'SYNCED'
     });
@@ -616,12 +696,16 @@ async function upsertLocalTaskFromAsanaEntry(
   }
 
   const existing = await context.data.getTask(taskMapping.localId);
-  const externalUpdatedAt = entry.created_at ? Date.parse(entry.created_at) : 0;
-  if (existing?.lastUpdate && externalUpdatedAt > 0 && externalUpdatedAt <= existing.lastUpdate) {
+  // Entries expose no modified timestamp — created_at vs the task's own
+  // lastUpdate is the only staleness signal available.
+  if (isStaleExternalChange({
+    externalUpdatedAt: entry.created_at,
+    localLastUpdateMillis: getLastUpdateMillis(existing)
+  })) {
     return false;
   }
 
-  await context.data.updateTask(taskMapping.localId, {
+  const updated = await context.data.updateTask(taskMapping.localId, {
     projectId: localProjectId,
     todoId: todoMapping.localId,
     startDateTime: dateRange.startDateTime,
@@ -639,7 +723,8 @@ async function upsertLocalTaskFromAsanaEntry(
       asanaTaskGid,
       todoId: todoMapping.localId,
       durationMinutes: String(entry.duration_minutes ?? 0),
-      enteredOn: entry.entered_on ?? ''
+      enteredOn: entry.entered_on ?? '',
+      ...syncMetadataStamp({ localLastUpdateMillis: getLastUpdateMillis(updated) })
     },
     syncStatus: 'SYNCED'
   });
@@ -791,13 +876,17 @@ function buildAsanaTaskPayloadFromTodo(todo: ToDoDto): Record<string, unknown> {
 }
 
 function computeDurationMinutes(task: TaskDto): number | null {
+  // task.duration and task.durationBreak are in seconds; Asana wants whole
+  // minutes, so net worked seconds convert with a /60 divisor.
   if (typeof task.duration === 'number' && task.duration > 0) {
-    return Math.max(0, Math.round((task.duration - (task.durationBreak ?? 0)) / 60_000));
+    return Math.max(0, Math.round((task.duration - (task.durationBreak ?? 0)) / 60));
   }
   const start = parseDate(task.startDateTime);
   const end = parseDate(task.endDateTime);
   if (!start || !end) return null;
-  const ms = end.getTime() - start.getTime() - (task.durationBreak ?? 0);
+  // The start/end delta is milliseconds; durationBreak (seconds) is scaled to
+  // match before subtracting.
+  const ms = end.getTime() - start.getTime() - (task.durationBreak ?? 0) * 1000;
   return ms <= 0 ? 0 : Math.round(ms / 60_000);
 }
 

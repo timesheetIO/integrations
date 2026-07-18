@@ -7,39 +7,43 @@ export interface GoogleHealthConfig {
   syncTagId?: string;
 }
 
+/** GET /v4/users/me/identity returns the Fitbit legacy user id and the Google user id. */
 export interface GoogleHealthIdentity {
-  healthUserId?: string;
   fitbitUserId?: string;
   googleUserId?: string;
 }
 
 /**
- * Shape of an `exercise` data point from
+ * Normalized exercise session, mapped from an `exercise` data point of
  * GET /v4/users/me/dataTypes/exercise/dataPoints.
  *
- * The exact field names are not fully documented in the public API reference;
- * we accept the documented fields and tolerate unknown extras. Verify against
- * the live API and adjust the parser in googleHealthClient if needed.
+ * Raw shape (see https://developers.google.com/health/reference/rest/v4/users.dataTypes.dataPoints):
+ * DataPoint { name, dataSource: { recordingMethod, platform }, exercise: {
+ *   interval: { startTime, endTime, startUtcOffset, endUtcOffset },
+ *   exerciseType, displayName, activeDuration, metricsSummary: {
+ *     caloriesKcal, distanceMillimeters, steps, ... } } }
  */
 export interface GoogleHealthExercise {
-  /** Unique data point id used for dedup. */
+  /** DataPoint resource name, used for dedup. */
   id: string;
-  /** ISO 8601. */
+  /** RFC 3339 timestamp from `exercise.interval.startTime`. */
   startTime: string;
-  /** ISO 8601. */
+  /** RFC 3339 timestamp from `exercise.interval.endTime`. */
   endTime: string;
-  /** e.g. 'RUN', 'YOGA', 'BIKE'. May be absent for free-form sessions. */
-  type?: string;
+  /** `exercise.exerciseType` enum value, e.g. 'RUNNING', 'YOGA', 'BIKING'. */
+  exerciseType?: string;
+  /** User-facing session name from `exercise.displayName`, when present. */
+  displayName?: string;
+  /** Protobuf Duration string from `exercise.activeDuration`, e.g. '1800s'. */
+  activeDuration?: string;
+  /** `exercise.metricsSummary.caloriesKcal`. */
+  caloriesKcal?: number;
+  /** `exercise.metricsSummary.distanceMillimeters`. */
+  distanceMillimeters?: number;
   source?: {
-    name?: string;
-    type?: string;
+    recordingMethod?: string;
+    platform?: string;
   };
-  /** Active minutes for the session. */
-  activeMinutes?: number;
-  /** Distance value (millimeters per Google Health unit convention). */
-  distance?: number;
-  /** Total calories burned. */
-  totalCalories?: number;
 }
 
 export interface ListExercisesPage {

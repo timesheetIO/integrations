@@ -4,7 +4,14 @@ import {
   ProjectDto,
   TaskCreateInput,
   TaskDto,
-  TaskUpdateInput
+  TaskUpdateInput,
+  getLastUpdateMillis,
+  isAlreadySyncedLocalChange,
+  isStaleExternalChange,
+  readMetadataNumber,
+  readMetadataString,
+  releaseStateLock,
+  tryAcquireStateLock
 } from '@timesheet/integration-sdk';
 import { GoogleCalendarClient } from './googleCalendarClient';
 import {
@@ -157,9 +164,7 @@ export async function syncTaskToGoogleCalendar(
   let eventWasCreated = false;
 
   if (taskMapping?.externalId) {
-    const mappedTaskUpdatedAt = readMetadataNumber(taskMapping.metadata ?? {}, 'timesheetUpdatedAt');
-    const taskUpdatedAt = getTaskLastUpdateMillis(task);
-    if (mappedTaskUpdatedAt > 0 && taskUpdatedAt > 0 && taskUpdatedAt <= mappedTaskUpdatedAt) {
+    if (isAlreadySyncedLocalChange(taskMapping.metadata, getLastUpdateMillis(task))) {
       return {
         system: SYSTEM,
         status: 'skipped',
@@ -208,7 +213,7 @@ export async function syncTaskToGoogleCalendar(
     localId: task.id,
     externalId: externalEvent.id,
     externalLabel: externalEvent.summary ?? task.description ?? task.id,
-    metadata: buildTaskMappingMetadata(externalCalendarId, externalEvent, getTaskLastUpdateMillis(task), mappingOrigin),
+    metadata: buildTaskMappingMetadata(externalCalendarId, externalEvent, getLastUpdateMillis(task), mappingOrigin),
     syncStatus: 'SYNCED'
   };
 
@@ -392,17 +397,11 @@ async function syncCalendar(
   const lockKey = getSyncLockStateKey(calendarId);
   let acquiredLock = false;
   if (options.lockTtlSeconds && options.lockTtlSeconds > 0) {
-    try {
-      const lockOptions = { ttlSeconds: options.lockTtlSeconds, ifAbsent: true };
-      await context.state.set(lockKey, Date.now(), lockOptions);
-      acquiredLock = true;
-    } catch (err) {
-      if (isStateConflictError(err)) {
-        context.logger.info('Calendar sync already in progress, skipping duplicate webhook', { calendarId });
-        return 0;
-      }
-      throw err;
+    if (!(await tryAcquireStateLock(context.state, lockKey, options.lockTtlSeconds))) {
+      context.logger.info('Calendar sync already in progress, skipping duplicate webhook', { calendarId });
+      return 0;
     }
+    acquiredLock = true;
   }
 
   const syncStateKey = getSyncTokenStateKey(calendarId);
@@ -460,13 +459,6 @@ async function syncCalendar(
       }
     }
   }
-}
-
-function isStateConflictError(err: unknown): boolean {
-  const message = String(err);
-  return message.includes('Timesheet API request failed (409)')
-    || message.includes('StateConflict')
-    || message.includes('State key already exists');
 }
 
 async function fetchAndSyncEvents(
@@ -571,19 +563,13 @@ async function syncSingleGoogleEvent(
     let importLockKey: string | undefined;
     if (options.importLockTtlSeconds && options.importLockTtlSeconds > 0) {
       importLockKey = getEventImportLockStateKey(calendarId, event);
-      try {
-        const lockOptions = { ttlSeconds: options.importLockTtlSeconds, ifAbsent: true };
-        await context.state.set(importLockKey, Date.now(), lockOptions);
-      } catch (err) {
-        if (isStateConflictError(err)) {
-          context.logger.info('Google Calendar event import already in progress, skipping duplicate create', {
-            calendarId,
-            eventId: event.id,
-            updated: event.updated ?? ''
-          });
-          return false;
-        }
-        throw err;
+      if (!(await tryAcquireStateLock(context.state, importLockKey, options.importLockTtlSeconds))) {
+        context.logger.info('Google Calendar event import already in progress, skipping duplicate create', {
+          calendarId,
+          eventId: event.id,
+          updated: event.updated ?? ''
+        });
+        return false;
       }
     }
 
@@ -601,15 +587,7 @@ async function syncSingleGoogleEvent(
       // the event. Otherwise the retry skips it as a duplicate, the sync token
       // advances past it, and the event is lost until it is edited again.
       if (importLockKey) {
-        try {
-          await context.state.delete(importLockKey);
-        } catch (cleanupErr) {
-          context.logger.warn('Failed to release event import lock after create failure', {
-            calendarId,
-            eventId: event.id,
-            error: String(cleanupErr)
-          });
-        }
+        await releaseStateLock(context.state, importLockKey);
       }
       throw err;
     }
@@ -642,7 +620,7 @@ async function syncSingleGoogleEvent(
     }
 
     const createdTask = created as TaskDto;
-    const timesheetUpdatedAt = getTaskLastUpdateMillis(createdTask) || Date.now();
+    const timesheetUpdatedAt = getLastUpdateMillis(createdTask) || Date.now();
     // Metadata comes from the stamped event so the webhook fired by our own
     // PATCH carries the same `updated` value and self-skips.
     const metadata = buildTaskMappingMetadata(calendarId, stampedEvent, timesheetUpdatedAt, ORIGIN_GOOGLE);
@@ -667,15 +645,15 @@ async function syncSingleGoogleEvent(
     return true;
   }
 
-  const externalUpdatedAt = event.updated ? Date.parse(event.updated) : 0;
-  const mappedExternalUpdated = readMetadataString(taskMapping.metadata ?? {}, 'updated');
-  const mappedExternalUpdatedAt = mappedExternalUpdated ? Date.parse(mappedExternalUpdated) : 0;
-  if (externalUpdatedAt > 0 && mappedExternalUpdatedAt > 0 && externalUpdatedAt <= mappedExternalUpdatedAt) {
+  if (isStaleExternalChange({ metadata: taskMapping.metadata, externalUpdatedAt: event.updated })) {
     return false;
   }
 
   const existing = await context.data.getTask(taskMapping.localId);
-  if (existing?.lastUpdate && externalUpdatedAt > 0 && externalUpdatedAt <= existing.lastUpdate) {
+  if (isStaleExternalChange({
+    externalUpdatedAt: event.updated,
+    localLastUpdateMillis: getLastUpdateMillis(existing)
+  })) {
     return false;
   }
 
@@ -688,7 +666,7 @@ async function syncSingleGoogleEvent(
     location: event.location
   } as TaskUpdateInput);
   const updatedTask = updated as TaskDto | undefined;
-  const timesheetUpdatedAt = getTaskLastUpdateMillis(updatedTask) || Date.now();
+  const timesheetUpdatedAt = getLastUpdateMillis(updatedTask) || Date.now();
   const metadata = buildTaskMappingMetadata(calendarId, event, timesheetUpdatedAt, storedOrigin ?? inferOriginFromEvent(event));
 
   await context.mappings.upsert({
@@ -954,22 +932,6 @@ function inferOriginFromEvent(event: GoogleCalendarEvent | undefined): string | 
   // absence proves a Google origin. Presence is ambiguous — old echoes
   // stamped imported events too — so those stay unknown.
   return event?.extendedProperties?.private?.timesheetId ? undefined : ORIGIN_GOOGLE;
-}
-
-function getTaskLastUpdateMillis(task?: Partial<TaskDto> | null): number {
-  const value = task?.lastUpdate;
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return value;
-  }
-  if (typeof value === 'string') {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) {
-      return parsed;
-    }
-    const date = Date.parse(value);
-    return Number.isFinite(date) ? date : 0;
-  }
-  return 0;
 }
 
 function getTaskDescriptionFromEvent(event: GoogleCalendarEvent, origin?: string): string {
@@ -1250,26 +1212,6 @@ async function stopDuplicateWatchChannel(
     metadata: updatedMetadata,
     syncStatus: 'SYNCED'
   });
-}
-
-function readMetadataString(metadata: Record<string, unknown>, key: string): string | undefined {
-  const value = metadata[key];
-  if (typeof value === 'string' && value.trim().length > 0) {
-    return value;
-  }
-  return undefined;
-}
-
-function readMetadataNumber(metadata: Record<string, unknown>, key: string): number {
-  const value = metadata[key];
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return value;
-  }
-  if (typeof value === 'string' && value.trim().length > 0) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : 0;
-  }
-  return 0;
 }
 
 function readWatchExpiration(metadata: Record<string, unknown>): number {

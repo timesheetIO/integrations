@@ -1,13 +1,25 @@
 {
   "id": "monday-sync",
   "name": "monday.com Sync",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Synchronize Timesheet tasks and todos with monday.com",
   "longDescription": "Bidirectional synchronization between Timesheet and monday.com. Timesheet ToDos are mirrored as monday.com items inside the mapped board, and Timesheet time entries are pushed as subitems of the corresponding item (or as a standalone item on the board when no ToDo is linked).",
   "icon": "monday",
   "category": "project-management",
-  "tags": ["sync", "timesheet", "monday", "project-management", "time-tracking"],
-  "dataAccess": ["projects", "tasks", "todos", "colleagues", "settings"],
+  "tags": [
+    "sync",
+    "timesheet",
+    "monday",
+    "project-management",
+    "time-tracking"
+  ],
+  "dataAccess": [
+    "projects",
+    "tasks",
+    "todos",
+    "colleagues",
+    "settings"
+  ],
   "externalAuth": [
     {
       "id": "monday",
@@ -15,7 +27,13 @@
       "oauth": {
         "authorizeUrl": "https://auth.monday.com/oauth2/authorize",
         "tokenUrl": "https://auth.monday.com/oauth2/token",
-        "scopes": ["boards:read", "boards:write", "me:read", "workspaces:read", "users:read"]
+        "scopes": [
+          "boards:read",
+          "boards:write",
+          "me:read",
+          "workspaces:read",
+          "users:read"
+        ]
       }
     }
   ],
@@ -25,7 +43,11 @@
       "syncDirection": {
         "type": "string",
         "title": "Sync Direction",
-        "enum": ["bidirectional", "timesheet-to-monday", "monday-to-timesheet"],
+        "enum": [
+          "bidirectional",
+          "timesheet-to-monday",
+          "monday-to-timesheet"
+        ],
         "default": "bidirectional",
         "x-ui-widget": "radio"
       },
@@ -38,11 +60,13 @@
       "itemNameTemplate": {
         "type": "string",
         "title": "Item Name Template",
-        "default": "Timesheet entry {startDate} {startTime}–{endTime}",
+        "default": "Timesheet entry {startDate} {startTime}\u2013{endTime}",
         "x-ui-help": "Used as the monday.com item/subitem name when a time entry has no description. Placeholders: {description}, {projectTitle}, {startDate}, {endDate}, {startTime}, {endTime}, {startDateTime}, {endDateTime}, {taskId}."
       }
     },
-    "required": ["syncDirection"]
+    "required": [
+      "syncDirection"
+    ]
   },
   "mappingSchema": {
     "system": "monday",
@@ -67,7 +91,7 @@
       {
         "id": "users",
         "title": "User Mapping",
-        "description": "Map Timesheet users to monday.com workspace members. Optional — when configured, each user's time entries are assigned to their own monday.com account via the item's person column instead of the OAuth owner.",
+        "description": "Map Timesheet users to monday.com workspace members. Optional \u2014 when configured, each user's time entries are assigned to their own monday.com account via the item's person column instead of the OAuth owner.",
         "localEntity": {
           "type": "user",
           "label": "Timesheet User",

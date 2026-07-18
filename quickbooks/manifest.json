@@ -1,13 +1,22 @@
 {
   "id": "quickbooks-sync",
   "name": "QuickBooks Time Sync",
-  "version": "1.5.2",
+  "version": "1.5.3",
   "description": "Synchronize tasks with QuickBooks Online",
   "longDescription": "Bidirectional synchronization between Timesheet tasks and QuickBooks TimeActivity entries.",
   "icon": "quickbooks",
   "category": "accounting",
-  "tags": ["sync", "timesheet", "quickbooks", "time-tracking"],
-  "dataAccess": ["projects", "tasks", "colleagues"],
+  "tags": [
+    "sync",
+    "timesheet",
+    "quickbooks",
+    "time-tracking"
+  ],
+  "dataAccess": [
+    "projects",
+    "tasks",
+    "colleagues"
+  ],
   "externalAuth": [
     {
       "id": "quickbooks",
@@ -15,7 +24,9 @@
       "oauth": {
         "authorizeUrl": "https://appcenter.intuit.com/connect/oauth2",
         "tokenUrl": "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
-        "scopes": ["com.intuit.quickbooks.accounting"]
+        "scopes": [
+          "com.intuit.quickbooks.accounting"
+        ]
       }
     }
   ],
@@ -25,7 +36,11 @@
       "syncDirection": {
         "type": "string",
         "title": "Sync Direction",
-        "enum": ["bidirectional", "timesheet-to-qb", "qb-to-timesheet"],
+        "enum": [
+          "bidirectional",
+          "timesheet-to-qb",
+          "qb-to-timesheet"
+        ],
         "default": "bidirectional",
         "x-ui-widget": "radio"
       },
@@ -33,12 +48,17 @@
         "type": "string",
         "title": "Billing Rate Source",
         "description": "Where the billable rate on QuickBooks time entries comes from: the sales price of the mapped QuickBooks service, or the Timesheet rate calculated per task",
-        "enum": ["quickbooks-service", "timesheet-rate"],
+        "enum": [
+          "quickbooks-service",
+          "timesheet-rate"
+        ],
         "default": "quickbooks-service",
         "x-ui-widget": "radio"
       }
     },
-    "required": ["syncDirection"]
+    "required": [
+      "syncDirection"
+    ]
   },
   "mappingSchema": {
     "system": "quickbooks",
@@ -102,7 +122,11 @@
       "mode": "sync",
       "name": "Task Changed",
       "description": "Sync task create/update/delete events to QuickBooks",
-      "events": ["task.create", "task.update", "task.delete"],
+      "events": [
+        "task.create",
+        "task.update",
+        "task.delete"
+      ],
       "configurable": true,
       "actionId": "handle-sync-batch"
     },
@@ -119,7 +143,10 @@
         "signature": {
           "header": "intuit-signature",
           "algorithm": "hmac-sha256",
-          "secretEnv": ["QUICKBOOKS_WEBHOOK_VERIFIER", "QUICKBOOKS_SANDBOX_WEBHOOK_VERIFIER"]
+          "secretEnv": [
+            "QUICKBOOKS_WEBHOOK_VERIFIER",
+            "QUICKBOOKS_SANDBOX_WEBHOOK_VERIFIER"
+          ]
         }
       }
     },
@@ -132,7 +159,11 @@
       "schedule": "0 2 * * *",
       "timezone": "UTC",
       "configurable": true,
-      "events": ["task.create", "task.update", "task.delete"],
+      "events": [
+        "task.create",
+        "task.update",
+        "task.delete"
+      ],
       "actionId": "handle-sync-batch"
     },
     {

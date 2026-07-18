@@ -2,28 +2,29 @@ import { ExternalEntity } from '@timesheet/integration-sdk';
 
 /**
  * Curated set of common Google Health exercise types surfaced in the mapping UI.
- * Workouts whose `type` is not in this list still sync via the fallback project.
+ * Workouts whose `exerciseType` is not in this list still sync via the fallback project.
  *
- * `id` values match Google Health's `exercise.type` enum (uppercase, snake_case).
+ * `id` values match the `Exercise.ExerciseType` enum of the Google Health API
+ * (https://developers.google.com/health/reference/rest/v4/users.dataTypes.dataPoints#exercise).
  */
 export const CURATED_EXERCISE_TYPES: ExternalEntity[] = [
-  { id: 'RUN', name: 'Running' },
-  { id: 'WALK', name: 'Walking' },
-  { id: 'BIKE', name: 'Cycling' },
-  { id: 'SWIM', name: 'Swimming' },
+  { id: 'RUNNING', name: 'Running' },
+  { id: 'WALKING', name: 'Walking' },
+  { id: 'BIKING', name: 'Cycling' },
+  { id: 'SWIMMING', name: 'Swimming' },
   { id: 'YOGA', name: 'Yoga' },
   { id: 'STRENGTH_TRAINING', name: 'Strength Training' },
   { id: 'HIIT', name: 'HIIT' },
   { id: 'PILATES', name: 'Pilates' },
   { id: 'ELLIPTICAL', name: 'Elliptical' },
   { id: 'ROWING', name: 'Rowing' },
-  { id: 'STAIR_CLIMBING', name: 'Stair Climbing' },
+  { id: 'STAIRCLIMBER', name: 'Stair Climbing' },
   { id: 'TENNIS', name: 'Tennis' },
   { id: 'GOLF', name: 'Golf' },
   { id: 'BASKETBALL', name: 'Basketball' },
   { id: 'SOCCER', name: 'Soccer' },
   { id: 'HIKING', name: 'Hiking' },
-  { id: 'DANCE', name: 'Dance' },
+  { id: 'DANCING', name: 'Dance' },
   { id: 'MARTIAL_ARTS', name: 'Martial Arts' },
   { id: 'OTHER', name: 'Other / Unspecified' }
 ];
