@@ -1,3 +1,13 @@
+# This workflow lives inside integrations/ so the subtree mirror carries it
+# to the public timesheetIO/integrations repo, where it runs. It is inert in
+# the monorepo (GitHub only runs workflows under the repo-root
+# .github/workflows; the monorepo equivalent is ci-integrations.yml).
+#
+# No root npm ci / jest here: the root package.json depends on the SDK via
+# file:../packages/integrations-sdk, a path that only exists in the
+# monorepo checkout. Each plugin installs @timesheet/integration-sdk from
+# the npm registry through its own lockfile, so per-plugin builds work
+# standalone. The full test suite runs in the monorepo (ci-integrations.yml).
 name: CI
 
 on:
@@ -5,29 +15,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        node-version: [18.x, 20.x]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Use Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: npm
-
-      - run: npm ci
-      - run: npm run typecheck
-        continue-on-error: true
-      - run: npm test
-
   build-plugins:
-    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,13 +26,49 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20.x'
-          cache: npm
-
-      - run: npm ci
 
       - name: Build all plugins
         run: |
           for dir in asana clickup freshbooks google-calendar google-health monday notion outlook-calendar quickbooks xero; do
             echo "Building $dir..."
             cd $dir && npm ci && npm run build && cd ..
+          done
+
+  # "Publish what's missing": publish every plugin whose package.json
+  # version is not on the npm registry yet. A publish alone never changes
+  # production: the plugin-runtime executes the Integration row's pinned
+  # packageVersion until it is repointed (PUT /v1/integrations/{id} or
+  # POST /v1/integrations/{id}/refresh-manifest), see dev/releasing.md in
+  # the monorepo. Auth is a granular npm token (NPM_TOKEN secret on this
+  # repo) with read/write on the @timesheet scope so first-time publishes
+  # of new plugins work too.
+  publish-missing:
+    needs: build-plugins
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Publish plugins missing from npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "NPM_TOKEN secret not configured; skipping publish."
+            exit 0
+          fi
+          for dir in asana clickup freshbooks google-calendar google-health monday notion outlook-calendar quickbooks xero; do
+            NAME=$(node -p "require('./$dir/package.json').name")
+            VERSION=$(node -p "require('./$dir/package.json').version")
+            if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+              echo "$NAME@$VERSION already on npm; skipping"
+              continue
+            fi
+            echo "Publishing $NAME@$VERSION"
+            (cd "$dir" && npm ci && npm publish --access public)
           done
