@@ -18,6 +18,14 @@ interface ListExercisesParams {
 /** Documented maximum page size for session data types (exercise, sleep). */
 const PAGE_SIZE_DEFAULT = 25;
 
+/**
+ * The API only filters on civil (local wall-clock) start time. A workout in a
+ * UTC-negative zone has a civil time up to 12h behind the instant, so the
+ * filter bound is widened by this much to not miss it; already-imported
+ * workouts are skipped via the `workout` mapping table.
+ */
+const CIVIL_SKEW_MS = 12 * 60 * 60 * 1000;
+
 export class GoogleHealthClient {
   private static readonly API_BASE = 'https://health.googleapis.com';
   private static readonly REQUEST_TIMEOUT_MS = 30_000;
@@ -50,9 +58,13 @@ export class GoogleHealthClient {
     const query = new URLSearchParams();
     query.set('pageSize', String(params.pageSize ?? PAGE_SIZE_DEFAULT));
     if (params.startTimeAfter) {
-      // Filter fields are spelled in snake_case and support the >= and < operators;
-      // RFC 3339 values must be quoted (see the users.dataTypes.dataPoints.list reference).
-      query.set('filter', `exercise.interval.start_time >= "${params.startTimeAfter}"`);
+      // Only `civil_start_time` is a supported filter member (`start_time` is
+      // rejected with INVALID_DATA_POINT_FILTER); values are ISO 8601 without a
+      // zone suffix, and only the >= and < operators are supported.
+      const civilFloor = new Date(Date.parse(params.startTimeAfter) - CIVIL_SKEW_MS)
+        .toISOString()
+        .slice(0, 19);
+      query.set('filter', `exercise.interval.civil_start_time >= "${civilFloor}"`);
     }
     if (params.pageToken) {
       query.set('pageToken', params.pageToken);

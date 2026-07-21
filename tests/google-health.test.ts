@@ -165,7 +165,7 @@ describe('google-health plugin', () => {
     expect(listCall).toBeDefined();
     const query = new URL(listCall as string).searchParams;
     expect(query.get('pageSize')).toBe('25');
-    expect(query.get('filter')).toMatch(/^exercise\.interval\.start_time >= "\d{4}-\d{2}-\d{2}T.*"$/);
+    expect(query.get('filter')).toMatch(/^exercise\.interval\.civil_start_time >= "\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"$/);
   });
 
   it('re-scans a 48h overlap window before the stored cursor', async () => {
@@ -178,7 +178,8 @@ describe('google-health plugin', () => {
       .map((call) => String(call[0]))
       .find((url) => url.includes('/dataTypes/exercise/dataPoints'));
     const filter = new URL(listCall as string).searchParams.get('filter') as string;
-    expect(filter).toContain('2026-03-03T12:00:00.000Z');
+    // 48h overlap before the cursor, plus the 12h civil-time skew widening.
+    expect(filter).toContain('2026-03-03T00:00:00');
   });
 
   it('skips workouts that were already imported', async () => {

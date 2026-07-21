@@ -1,7 +1,7 @@
 {
   "id": "google-health-sync",
   "name": "Google Health",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Import Google Health exercise sessions as Timesheet time entries",
   "longDescription": "Reads workout sessions from Google Health and creates a Timesheet task on the project mapped to the corresponding exercise type. Read-only: no data is written back to Google Health.",
   "icon": "google-health",
