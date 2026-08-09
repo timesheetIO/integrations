@@ -1,0 +1,261 @@
+{
+  "id": "basecamp-sync",
+  "name": "Basecamp Sync",
+  "version": "1.0.0",
+  "description": "Synchronize Timesheet todos and time entries with Basecamp",
+  "longDescription": "Bidirectional synchronization between Timesheet and Basecamp. Timesheet todos are mirrored 1:1 with Basecamp to-dos in the mapped project, and Timesheet time entries attached to a todo are logged as Basecamp timesheet entries on the corresponding to-do. Changes made in Basecamp flow back through project webhooks and scheduled syncs. Writing time into Basecamp needs the paid Timesheets add-on on the Basecamp project; without it, to-do sync keeps working and time entries stay in Timesheet only.",
+  "icon": "basecamp",
+  "category": "project-management",
+  "tags": [
+    "sync",
+    "timesheet",
+    "basecamp",
+    "project-management"
+  ],
+  "dataAccess": [
+    "projects",
+    "tasks",
+    "todos",
+    "colleagues",
+    "settings"
+  ],
+  "externalAuth": [
+    {
+      "id": "basecamp",
+      "type": "oauth2",
+      "oauth": {
+        "authorizeUrl": "https://launchpad.37signals.com/authorization/new",
+        "tokenUrl": "https://launchpad.37signals.com/authorization/token",
+        "scopes": [],
+        "authorizationParams": {
+          "type": "web_server"
+        }
+      }
+    }
+  ],
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "syncDirection": {
+        "type": "string",
+        "title": "Sync Direction",
+        "enum": [
+          "bidirectional",
+          "timesheet-to-basecamp",
+          "basecamp-to-timesheet"
+        ],
+        "default": "bidirectional",
+        "x-ui-widget": "radio"
+      },
+      "pushTimeEntries": {
+        "type": "string",
+        "title": "Write time entries to Basecamp",
+        "enum": [
+          "auto",
+          "off"
+        ],
+        "default": "auto",
+        "x-ui-widget": "radio",
+        "x-ui-help": "Requires the paid Timesheets add-on on the Basecamp project. Projects without it are skipped automatically."
+      },
+      "todoListName": {
+        "type": "string",
+        "title": "To-do list",
+        "x-ui-help": "Optional. Name of the Basecamp to-do list new to-dos are created in. Defaults to the project's first list."
+      }
+    },
+    "required": [
+      "syncDirection"
+    ]
+  },
+  "mappingSchema": {
+    "system": "basecamp",
+    "mappings": [
+      {
+        "id": "projects",
+        "title": "Project Mapping",
+        "description": "Map Timesheet projects to Basecamp projects",
+        "localEntity": {
+          "type": "project",
+          "label": "Timesheet Project",
+          "display": "{{title}}"
+        },
+        "externalEntity": {
+          "type": "project",
+          "label": "Basecamp Project",
+          "fetchAction": "list-external-projects"
+        },
+        "required": true,
+        "minMappings": 1
+      }
+    ]
+  },
+  "triggers": [
+    {
+      "id": "todo-changed",
+      "type": "event",
+      "mode": "sync",
+      "name": "Todo Changed",
+      "description": "Sync todo create/update/delete events to Basecamp to-dos",
+      "events": [
+        "todo.create",
+        "todo.update",
+        "todo.delete"
+      ],
+      "configurable": true,
+      "actionId": "handle-sync-batch"
+    },
+    {
+      "id": "task-changed",
+      "type": "event",
+      "mode": "sync",
+      "name": "Time Entry Changed",
+      "description": "Log Timesheet time entries as Basecamp timesheet entries",
+      "events": [
+        "task.create",
+        "task.update",
+        "task.delete"
+      ],
+      "configurable": true,
+      "actionId": "handle-sync-batch"
+    },
+    {
+      "id": "integration-webhook",
+      "type": "webhook",
+      "name": "Basecamp Webhook",
+      "description": "Receive inbound to-do changes from Basecamp",
+      "configurable": false,
+      "actionId": "handle-webhook"
+    },
+    {
+      "id": "full-sync",
+      "type": "schedule",
+      "mode": "sync",
+      "name": "Scheduled Full Sync",
+      "description": "Run a complete reconciliation sync",
+      "schedule": "0 2 * * *",
+      "timezone": "UTC",
+      "configurable": true,
+      "events": [
+        "todo.create",
+        "todo.update",
+        "todo.delete",
+        "task.create",
+        "task.update",
+        "task.delete"
+      ],
+      "actionId": "handle-sync-batch"
+    },
+    {
+      "id": "manual-sync",
+      "type": "user_action",
+      "name": "Manual Sync",
+      "description": "Run a full sync from settings",
+      "userAction": {
+        "label": "Sync Now",
+        "placement": "settings"
+      },
+      "actionId": "run-full-sync"
+    },
+    {
+      "id": "register-webhooks-action",
+      "type": "user_action",
+      "name": "Register Webhooks",
+      "description": "Register the Basecamp project webhooks for real-time inbound sync",
+      "userAction": {
+        "label": "Register Webhooks",
+        "placement": "settings"
+      },
+      "actionId": "register-webhooks"
+    }
+  ],
+  "actions": [
+    {
+      "id": "sync-todo-to-external",
+      "name": "Sync todo to Basecamp to-do",
+      "handler": "syncTodoToExternal"
+    },
+    {
+      "id": "sync-todo-from-external",
+      "name": "Sync todo from Basecamp payload",
+      "handler": "syncTodoFromExternal",
+      "internal": true
+    },
+    {
+      "id": "sync-task-to-external",
+      "name": "Sync time entry to Basecamp",
+      "handler": "syncTaskToExternal"
+    },
+    {
+      "id": "handle-sync-batch",
+      "name": "Handle sync batch",
+      "handler": "handleSyncBatch"
+    },
+    {
+      "id": "sync-task-from-external",
+      "name": "Sync time entry from Basecamp",
+      "handler": "syncTaskFromExternal",
+      "internal": true
+    },
+    {
+      "id": "handle-webhook",
+      "handler": "handleWebhook",
+      "internal": true
+    },
+    {
+      "id": "register-webhooks",
+      "name": "Register webhooks",
+      "handler": "registerWebhooks"
+    },
+    {
+      "id": "run-full-sync",
+      "name": "Run full sync",
+      "handler": "runFullSync"
+    },
+    {
+      "id": "test-connection",
+      "name": "Test connection",
+      "handler": "testConnection"
+    },
+    {
+      "id": "list-external-projects",
+      "handler": "listExternalProjects",
+      "internal": true
+    }
+  ],
+  "pages": [
+    {
+      "id": "dashboard",
+      "title": "Sync Dashboard",
+      "icon": "chart-bar",
+      "layout": "dashboard",
+      "widgets": [
+        {
+          "id": "last-sync",
+          "type": "metric",
+          "title": "Last Sync"
+        },
+        {
+          "id": "sync-stats",
+          "type": "metric",
+          "title": "Sync Statistics"
+        },
+        {
+          "id": "connection-health",
+          "type": "metric",
+          "title": "Connection Health"
+        },
+        {
+          "id": "manual-sync-btn",
+          "type": "action_button",
+          "title": "Manual Sync",
+          "config": {
+            "actionId": "run-full-sync",
+            "label": "Run Full Sync",
+            "variant": "primary"
+          }
+        }
+      ]
+    }
+  ]
+}

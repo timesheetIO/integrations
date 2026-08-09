@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { IntegrationContext } from '@timesheet/integration-sdk';
 
 import * as asanaHandlers from '../asana/src';
+import * as basecampHandlers from '../basecamp/src';
 import * as clickupHandlers from '../clickup/src';
 import * as freshbooksHandlers from '../freshbooks/src';
 import * as googleCalendarHandlers from '../google-calendar/src';
@@ -36,6 +37,11 @@ const pluginFixtures: PluginFixture[] = [
     slug: 'monday',
     manifestPath: path.resolve(__dirname, '../monday/manifest.json'),
     handlers: mondayHandlers
+  },
+  {
+    slug: 'basecamp',
+    manifestPath: path.resolve(__dirname, '../basecamp/manifest.json'),
+    handlers: basecampHandlers
   },
   {
     slug: 'xero',
@@ -182,6 +188,15 @@ beforeAll(() => {
     }
     if (requestUrl.includes('api.clickup.com/api/v2/list/') && requestUrl.includes('/task')) {
       return createFetchResponse({ tasks: [], last_page: true });
+    }
+    if (requestUrl.includes('launchpad.37signals.com/authorization.json')) {
+      return createFetchResponse({
+        identity: { id: 1049715913, email_address: 'victor@honchodesign.com' },
+        accounts: [{ id: 195539477, product: 'bc3', name: 'Honcho Design' }]
+      });
+    }
+    if (requestUrl.includes('3.basecampapi.com')) {
+      return createFetchResponse([]);
     }
     if (requestUrl.includes('app.asana.com/api/1.0/users/me')) {
       return createFetchResponse({ data: { gid: 'asana-user-1' } });

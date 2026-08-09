@@ -7,6 +7,7 @@ This folder contains first-party plugin packages for the sandboxed plugin runtim
 | Plugin | Package | Category | Description |
 | --- | --- | --- | --- |
 | [Asana](asana/README.md) | `@timesheet/plugin-asana` | project-management | Sync todos and time entries with Asana. |
+| [Basecamp](basecamp/README.md) | `@timesheet/plugin-basecamp` | project-management | Sync todos and time entries with Basecamp. |
 | [ClickUp](clickup/README.md) | `@timesheet/plugin-clickup` | project-management | Sync tasks and todos with ClickUp. |
 | [FreshBooks](freshbooks/README.md) | `@timesheet/plugin-freshbooks` | accounting | Sync tasks with FreshBooks time entries. |
 | [Google Calendar](google-calendar/README.md) | `@timesheet/plugin-google-calendar` | calendar | Sync tasks with Google Calendar events. |
