@@ -22,7 +22,7 @@ OAuth 2.0 against ClickUp.
 ## Mappings
 
 - **Project mapping**: Timesheet project to ClickUp list.
-- **User mapping**: Timesheet user to ClickUp workspace member. Optional, and only useful in multi-user workspaces on ClickUp paid plans, where it lets each user's time entries appear under their own ClickUp account instead of the OAuth owner.
+- **User mapping**: Timesheet user to ClickUp workspace member. Optional, and only useful in multi-user workspaces on ClickUp paid plans, where it lets each user's time entries appear under their own ClickUp account instead of the OAuth owner, and carries ClickUp task assignees onto the matching Timesheet todos.
 
 ## Triggers
 
@@ -30,6 +30,21 @@ OAuth 2.0 against ClickUp.
 - **ClickUp Webhook** (webhook): receives inbound task changes from ClickUp.
 - **Scheduled Full Sync** (daily at 02:00 UTC): runs incremental synchronization for all mapped lists.
 - **Manual Sync** (user action): triggers a sync from the integration settings page.
+
+## Organization installs
+
+ClickUp time is never imported into Timesheet, only written out, so unlike the other sync
+plugins there is no inbound time to misattribute on an organization install. Outbound entries
+carry the mapped member as their `assignee`, which ClickUp honours on paid plans and ignores
+on Free.
+
+What the user mapping adds inbound is assignment: an imported ClickUp task carries its
+assignees onto the local todo. An unassigned ClickUp task clears the local assignment, while
+a task assigned only to people this installation has not mapped leaves it untouched, since
+guessing there would either drop a real assignee or invent one.
+
+Assignees are read inbound but not written outbound: ClickUp needs an add/remove diff on task
+update, so Timesheet does not currently push assignment changes back.
 
 ## Development
 

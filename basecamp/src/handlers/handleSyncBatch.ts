@@ -1,6 +1,11 @@
 import { defineHandler, MappingRecord, SyncModeInput } from '@timesheet/integration-sdk';
 import { BasecampConfig, SyncInput } from '../lib/types';
-import { BasecampSyncResult, syncTimesheetTaskToBasecamp, syncTodoToBasecamp } from '../lib/taskSync';
+import {
+  BasecampSyncResult,
+  loadUserMappingIndex,
+  syncTimesheetTaskToBasecamp,
+  syncTodoToBasecamp
+} from '../lib/taskSync';
 
 const SYSTEM = 'basecamp';
 const PROJECT_ENTITY = 'project';
@@ -16,10 +21,11 @@ export const handleSyncBatch = defineHandler<SyncModeInput, BasecampSyncResult, 
       hasMore: input.hasMore
     });
 
-    const [projectMappings, todoMappings, taskMappings] = await Promise.all([
+    const [projectMappings, todoMappings, taskMappings, users] = await Promise.all([
       context.mappings.list({ system: SYSTEM, entity: PROJECT_ENTITY }),
       context.mappings.list({ system: SYSTEM, entity: TODO_ENTITY }),
-      context.mappings.list({ system: SYSTEM, entity: TASK_ENTITY })
+      context.mappings.list({ system: SYSTEM, entity: TASK_ENTITY }),
+      loadUserMappingIndex(context)
     ]);
 
     const projectMappingByLocalId = new Map<string, MappingRecord>();
@@ -29,7 +35,7 @@ export const handleSyncBatch = defineHandler<SyncModeInput, BasecampSyncResult, 
     const taskMappingByLocalId = new Map<string, MappingRecord>();
     for (const m of taskMappings) taskMappingByLocalId.set(m.localId, m);
 
-    const caches = { projectMappingByLocalId, todoMappingByLocalId, taskMappingByLocalId };
+    const caches = { projectMappingByLocalId, todoMappingByLocalId, taskMappingByLocalId, users };
 
     let syncedCount = 0;
     const errors: Array<{ entityId: string; entityType: string; error: string }> = [];

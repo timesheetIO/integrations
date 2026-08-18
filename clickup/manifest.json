@@ -1,7 +1,7 @@
 {
   "id": "clickup-sync",
   "name": "ClickUp Sync",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Synchronize Timesheet tasks and todos with ClickUp",
   "longDescription": "Bidirectional synchronization between Timesheet and ClickUp. Timesheet ToDos are mirrored as ClickUp tasks inside the mapped ClickUp list, and Timesheet time entries are pushed as ClickUp time entries attached to the corresponding ClickUp task (or workspace-level when no ToDo is linked).",
   "icon": "clickup",

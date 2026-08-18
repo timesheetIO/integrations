@@ -79,6 +79,8 @@ export interface NotionPage {
   // imply equal content. See the staleness handling in taskSync.
   last_edited_time?: string;
   parent?: { type?: string; database_id?: string; page_id?: string };
+  /** Who created the page. A page written by this plugin carries the bot user. */
+  created_by?: { object?: string; id?: string };
   properties?: Record<string, NotionPropertyValue>;
 }
 
@@ -86,6 +88,7 @@ export interface NotionUser {
   id: string;
   name?: string;
   type?: string;
+  person?: { email?: string };
 }
 
 export interface NotionListResponse<T> {

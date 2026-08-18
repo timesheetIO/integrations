@@ -1,7 +1,7 @@
 {
   "id": "notion-sync",
   "name": "Notion Sync",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Synchronize Timesheet todos and time entries with Notion databases",
   "longDescription": "Bidirectional synchronization between Timesheet and Notion. Timesheet todos are mirrored 1:1 with pages in the mapped Notion database, and Timesheet time entries (tasks) sync as rows of an optional time-log database, related to the todo's page. Changes made in Notion flow back through webhooks and scheduled syncs.",
   "icon": "notion",
@@ -82,6 +82,23 @@
         },
         "required": true,
         "minMappings": 1
+      },
+      {
+        "id": "users",
+        "title": "User Mapping",
+        "description": "Map Timesheet users to Notion users. Optional. Only needed for teams: it files each member's imported Notion time on their own Timesheet account instead of the account that connected the integration.",
+        "localEntity": {
+          "type": "user",
+          "label": "Timesheet User",
+          "display": "{{displayName}}"
+        },
+        "externalEntity": {
+          "type": "user",
+          "label": "Notion User",
+          "fetchAction": "list-external-users"
+        },
+        "required": false,
+        "minMappings": 0
       }
     ]
   },
@@ -195,6 +212,11 @@
     {
       "id": "list-external-projects",
       "handler": "listExternalProjects",
+      "internal": true
+    },
+    {
+      "id": "list-external-users",
+      "handler": "listExternalUsers",
       "internal": true
     }
   ],

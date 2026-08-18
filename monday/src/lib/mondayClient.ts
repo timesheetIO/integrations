@@ -129,6 +129,7 @@ export class MondayClient {
               id
               name
               state
+              creator_id
               created_at
               updated_at
               board { id name }
@@ -161,6 +162,7 @@ export class MondayClient {
               id
               name
               state
+              creator_id
               created_at
               updated_at
               board { id name }
@@ -204,6 +206,7 @@ export class MondayClient {
           id
           name
           state
+          creator_id
           created_at
           updated_at
           board { id name }

@@ -1,7 +1,7 @@
 {
   "id": "asana-sync",
   "name": "Asana Sync",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "description": "Synchronize Timesheet todos and time entries with Asana",
   "longDescription": "Bidirectional synchronization between Timesheet and Asana. Timesheet todos are mirrored 1:1 with Asana tasks in the mapped project, and Timesheet time entries (tasks) attached to a todo are logged as Asana time-tracking entries on the corresponding Asana task. Changes made in Asana flow back through webhooks and scheduled syncs.",
   "icon": "asana",
@@ -75,6 +75,23 @@
         },
         "required": true,
         "minMappings": 1
+      },
+      {
+        "id": "users",
+        "title": "User Mapping",
+        "description": "Map Timesheet users to Asana users. Optional. Only needed for teams: it files each member's imported Asana time on their own Timesheet account instead of the account that connected the integration.",
+        "localEntity": {
+          "type": "user",
+          "label": "Timesheet User",
+          "display": "{{displayName}}"
+        },
+        "externalEntity": {
+          "type": "user",
+          "label": "Asana User",
+          "fetchAction": "list-external-users"
+        },
+        "required": false,
+        "minMappings": 0
       }
     ]
   },
@@ -199,6 +216,11 @@
     {
       "id": "list-external-projects",
       "handler": "listExternalProjects",
+      "internal": true
+    },
+    {
+      "id": "list-external-users",
+      "handler": "listExternalUsers",
       "internal": true
     }
   ],

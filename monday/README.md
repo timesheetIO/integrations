@@ -23,7 +23,7 @@ OAuth 2.0 against monday.com, scopes `boards:read`, `boards:write`, `me:read`, `
 ## Mappings
 
 - **Project mapping**: Timesheet project to monday.com board.
-- **User mapping**: Timesheet user to monday.com workspace member. Optional. When configured, each user's time entries are assigned to their own monday.com account via the item's person column instead of the OAuth owner.
+- **User mapping**: Timesheet user to monday.com workspace member. Optional. When configured, each user's time entries are assigned to their own monday.com account via the item's person column instead of the OAuth owner, and imported subitems are booked on the member who created them.
 
 ## Triggers
 
@@ -31,6 +31,17 @@ OAuth 2.0 against monday.com, scopes `boards:read`, `boards:write`, `me:read`, `
 - **monday.com Webhook** (webhook): receives inbound item changes from monday.com.
 - **Scheduled Full Sync** (daily at 02:00 UTC): runs incremental synchronization for all mapped boards.
 - **Manual Sync** (user action): triggers a sync from the integration settings page.
+
+## Organization installs
+
+Inbound work runs as the installing admin, so without a user mapping every member's imported
+time is booked on that admin. With the mapping in place, an imported subitem is booked on the member behind its `creator_id`. Once any user is mapped,
+records belonging to someone this installation has not mapped are skipped rather than booked
+on the admin: attribution is create-only, because `TaskUpdateInput` carries no userId, so a
+wrong owner can never be corrected afterwards.
+
+Outbound attribution already works through the board's person column, so time flows under the
+right name in both directions.
 
 ## Development
 

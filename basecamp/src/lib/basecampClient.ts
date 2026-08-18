@@ -1,8 +1,10 @@
 import { ExternalEntity } from '@timesheet/integration-sdk';
 import {
   BasecampAuthorization,
+  BasecampPerson,
   BasecampProject,
   BasecampTimesheetEntry,
+  BasecampTimesheetEntryPayload,
   BasecampTodo,
   BasecampTodolist,
   BasecampWebhook
@@ -114,6 +116,14 @@ export class BasecampClient {
     return this.paginate<BasecampTodolist>(`/todosets/${encodeURIComponent(todosetId)}/todolists.json`);
   }
 
+  /**
+   * Active people on a project. Scoped per project rather than account-wide
+   * because a timesheet entry's `person_id` must be a member of that project.
+   */
+  async listProjectPeople(bucketId: string): Promise<BasecampPerson[]> {
+    return this.paginate<BasecampPerson>(`/projects/${encodeURIComponent(bucketId)}/people.json`);
+  }
+
   // --------------------------------------------------------------------------
   // To-dos
   // --------------------------------------------------------------------------
@@ -168,8 +178,13 @@ export class BasecampClient {
   /**
    * To-do recordings across the given buckets, newest change first. Used for
    * incremental inbound sync: one paginated call covers every mapped project.
+   *
+   * The feed lists active recordings unless a status is given, so removals have
+   * to be read from the `trashed` and `archived` feeds rather than inferred
+   * from an absence here. It has no since filter, so callers page the feed and
+   * apply their own watermark.
    */
-  async listTodoRecordings(bucketIds: string[]): Promise<BasecampTodo[]> {
+  async listTodoRecordings(bucketIds: string[], status?: string): Promise<BasecampTodo[]> {
     if (bucketIds.length === 0) {
       return [];
     }
@@ -177,7 +192,8 @@ export class BasecampClient {
       type: 'Todo',
       bucket: bucketIds.join(','),
       sort: 'updated_at',
-      direction: 'desc'
+      direction: 'desc',
+      ...(status ? { status } : {})
     });
   }
 
@@ -191,7 +207,7 @@ export class BasecampClient {
 
   async createTimesheetEntry(
     recordingId: string,
-    payload: { date: string; hours: string; description?: string }
+    payload: BasecampTimesheetEntryPayload
   ): Promise<BasecampTimesheetEntry> {
     const entry = await this.request<BasecampTimesheetEntry>(
       'POST',
@@ -207,7 +223,7 @@ export class BasecampClient {
 
   async updateTimesheetEntry(
     entryId: string,
-    payload: Partial<{ date: string; hours: string; description: string }>
+    payload: Partial<BasecampTimesheetEntryPayload>
   ): Promise<BasecampTimesheetEntry> {
     const entry = await this.request<BasecampTimesheetEntry>(
       'PUT',
@@ -433,4 +449,9 @@ function delay(ms: number): Promise<void> {
 
 function isStatus(err: unknown, status: number): boolean {
   return String(err).includes(`(${status})`);
+}
+
+/** Status match for callers that need to branch on a specific Basecamp error. */
+export function isBasecampStatus(err: unknown, status: number): boolean {
+  return isStatus(err, status);
 }

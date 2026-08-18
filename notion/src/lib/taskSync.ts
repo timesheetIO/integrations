@@ -29,6 +29,7 @@ const SYSTEM = 'notion';
 const PROJECT_ENTITY = 'project';
 const TODO_ENTITY = 'todo';
 const TASK_ENTITY = 'task';
+const USER_ENTITY = 'user';
 const SYNC_STATE_KEY = 'notion:last-sync-time';
 const WEBHOOK_SECRET_STATE_KEY = 'notion:webhook-secret';
 // Import locks close the webhook-vs-full-sync race on first import; held for
@@ -50,6 +51,47 @@ export interface SyncBatchCaches {
   projectMappingByLocalId?: Map<string, MappingRecord>;
   todoMappingByLocalId?: Map<string, MappingRecord>;
   taskMappingByLocalId?: Map<string, MappingRecord>;
+}
+
+/**
+ * The optional Timesheet user ↔ Notion user mapping, keyed both ways.
+ * `configured` is false on installations that never mapped anyone, which is the
+ * normal single-user case and keeps the previous behavior.
+ */
+export interface UserMappingIndex {
+  localToExternal: Map<string, string>;
+  externalToLocal: Map<string, string>;
+  configured: boolean;
+}
+
+/**
+ * Reads the user mapping once per invocation. Organization installs run their
+ * inbound work as the installing admin, so without this every member's Notion
+ * time would be booked on that admin.
+ */
+export async function loadUserMappingIndex(
+  context: IntegrationContext<NotionConfig>
+): Promise<UserMappingIndex> {
+  let records: MappingRecord[] = [];
+  try {
+    records = await context.mappings.list({ system: SYSTEM, entity: USER_ENTITY });
+  } catch (err) {
+    context.logger.warn('Failed to load Notion user mappings', { error: String(err) });
+  }
+
+  const localToExternal = new Map<string, string>();
+  const externalToLocal = new Map<string, string>();
+  for (const record of records) {
+    if (!record.localId || !record.externalId) continue;
+    localToExternal.set(record.localId, record.externalId);
+    // Two Timesheet users may point at one Notion user; the first wins inbound
+    // so imports stay deterministic.
+    if (!externalToLocal.has(normalizeId(record.externalId))) {
+      externalToLocal.set(normalizeId(record.externalId), record.localId);
+    }
+  }
+
+  return { localToExternal, externalToLocal, configured: localToExternal.size > 0 };
 }
 
 let sharedClient: NotionClient | null = null;
@@ -447,9 +489,10 @@ export async function runNotionFullSync(
   if (timeLogDatabaseId) {
     const props = await resolveDatabaseProps(context, client, timeLogDatabaseId);
     if (props) {
+      const users = await loadUserMappingIndex(context);
       const pages = await client.queryDatabase(timeLogDatabaseId, { editedSinceIso: lastSyncTime });
       for (const page of pages) {
-        const synced = await upsertLocalTaskFromNotionPage(context, page, props);
+        const synced = await upsertLocalTaskFromNotionPage(context, page, props, users);
         if (synced) syncedCount += 1;
       }
     }
@@ -564,7 +607,8 @@ async function syncPageInbound(
     if (!props) {
       return skip({ reason: 'time-log-schema-unavailable', pageId });
     }
-    const synced = await upsertLocalTaskFromNotionPage(context, page, props);
+    const users = await loadUserMappingIndex(context);
+    const synced = await upsertLocalTaskFromNotionPage(context, page, props, users);
     return { system: SYSTEM, status: 'completed', syncedCount: synced ? 1 : 0, details: { pageId, kind: 'task' } };
   }
 
@@ -666,7 +710,8 @@ async function upsertLocalTodoFromNotionPage(
 async function upsertLocalTaskFromNotionPage(
   context: IntegrationContext<NotionConfig>,
   page: NotionPage,
-  props: ResolvedDatabaseProps
+  props: ResolvedDatabaseProps,
+  users: UserMappingIndex
 ): Promise<boolean> {
   if (!page?.id || isPageGone(page)) return false;
 
@@ -692,6 +737,19 @@ async function upsertLocalTaskFromNotionPage(
 
   const description = readTitle(page, props);
 
+  const externalUserId = page.created_by?.id ? normalizeId(page.created_by.id) : undefined;
+  const localUserId = externalUserId ? users.externalToLocal.get(externalUserId) : undefined;
+  if (users.configured && !localUserId) {
+    // An installation that maps users expects per-member attribution. Importing
+    // an unmapped person's time would book it on whoever the inbound sync runs
+    // as, which on an organization install is the installing admin.
+    context.logger.info('Skipping Notion time log for an unmapped user', {
+      pageId: page.id,
+      notionUserId: externalUserId
+    });
+    return false;
+  }
+
   const taskMapping = await context.mappings.findByExternal({
     system: SYSTEM,
     entity: TASK_ENTITY,
@@ -709,13 +767,25 @@ async function upsertLocalTaskFromNotionPage(
 
     let created: TaskDto;
     try {
+      // Attribution is create-only: TaskUpdateInput carries no userId, so a task
+      // imported for the wrong member cannot be moved later.
       created = await context.data.createTask({
         projectId: localProjectId,
         todoId: todoMapping.localId,
         startDateTime: dateRange.startDateTime,
         endDateTime: dateRange.endDateTime,
-        description
+        description,
+        ...(localUserId ? { userId: localUserId } : {})
       } as TaskCreateInput);
+      if (localUserId && created?.user && created.user !== localUserId) {
+        // The backend drops userId when the acting profile has no team features
+        // and books the task on itself instead.
+        context.logger.error('Notion time log was booked on the wrong member', {
+          pageId: page.id,
+          requestedUserId: localUserId,
+          actualUserId: created.user
+        });
+      }
     } catch (err) {
       await releaseStateLock(context.state, lockKey);
       throw err;

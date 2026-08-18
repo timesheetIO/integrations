@@ -8,6 +8,7 @@ export { registerWebhooks } from './handlers/registerWebhooks';
 export { runFullSync } from './handlers/runFullSync';
 export { testConnection } from './handlers/testConnection';
 export { listExternalProjects } from './handlers/listExternalProjects';
+export { listExternalUsers } from './handlers/listExternalUsers';
 
 export const PLUGIN_SYSTEM = 'basecamp';
 export const PLUGIN_NAME = 'Basecamp Sync';

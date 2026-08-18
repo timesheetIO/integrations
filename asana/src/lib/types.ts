@@ -61,6 +61,12 @@ export interface AsanaTimeTrackingEntry {
   resource_type?: string;
 }
 
+export interface AsanaUser {
+  gid: string;
+  name?: string;
+  email?: string;
+}
+
 export interface AsanaPagedResponse<T> {
   data: T[];
   next_page?: {

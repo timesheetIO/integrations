@@ -7,6 +7,7 @@ export { handleWebhook } from './handlers/handleWebhook';
 export { runFullSync } from './handlers/runFullSync';
 export { testConnection } from './handlers/testConnection';
 export { listExternalProjects } from './handlers/listExternalProjects';
+export { listExternalUsers } from './handlers/listExternalUsers';
 
 export const PLUGIN_SYSTEM = 'notion';
 export const PLUGIN_NAME = 'Notion Sync';

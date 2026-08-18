@@ -1,5 +1,6 @@
 import { IntegrationContext, MappingRecord, TaskDto, ToDoDto } from '@timesheet/integration-sdk';
 import { handleWebhook } from '../basecamp/src/handlers/handleWebhook';
+import { runFullSync } from '../basecamp/src/handlers/runFullSync';
 import { syncTaskToExternal } from '../basecamp/src/handlers/syncTaskToExternal';
 import { syncTodoToExternal } from '../basecamp/src/handlers/syncTodoToExternal';
 import { resetSharedClient } from '../basecamp/src/lib/taskSync';
@@ -18,6 +19,9 @@ const createFetchResponse = (body: unknown, status = 200) => ({
 
 type FetchRoute = (url: string, init?: RequestInit) => unknown | undefined;
 
+/** Route return value that answers with a non-200 status. */
+const withStatus = (body: unknown, status: number) => ({ __status: status, body });
+
 const installFetch = (route?: FetchRoute): jest.Mock => {
   const fetchMock = jest.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
     const requestUrl = String(url);
@@ -28,6 +32,10 @@ const installFetch = (route?: FetchRoute): jest.Mock => {
 
     const routed = route?.(requestUrl, init);
     if (routed !== undefined) {
+      if (routed && typeof routed === 'object' && '__status' in (routed as Record<string, unknown>)) {
+        const { __status, body } = routed as { __status: number; body: unknown };
+        return createFetchResponse(body, __status);
+      }
       return createFetchResponse(routed);
     }
     return createFetchResponse({});
@@ -430,5 +438,383 @@ describe('basecamp webhooks', () => {
     expect(result.status).toBe('ignored');
     expect(result.details?.reason).toBe('unhandled-type');
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('basecamp user mapping', () => {
+  const todoMapping: MappingRecord = {
+    localId: 'todo-1',
+    externalId: '333',
+    syncStatus: 'SYNCED',
+    metadata: { bucketId: BUCKET_ID }
+  };
+
+  /** Installation that maps Timesheet users onto Basecamp people. */
+  const mappedUsers = jest.fn(async (input: { entity: string }) => {
+    if (input.entity === 'project') {
+      return [{ localId: 'project-1', externalId: BUCKET_ID, syncStatus: 'SYNCED' }];
+    }
+    if (input.entity === 'user') {
+      return [
+        { localId: 'user-1', externalId: '9001', syncStatus: 'SYNCED' },
+        { localId: 'user-2', externalId: '9002', syncStatus: 'SYNCED' }
+      ];
+    }
+    return [];
+  });
+
+  const timesheetEnabled = (url: string) =>
+    url.endsWith(`/projects/${BUCKET_ID}.json`) ? { id: Number(BUCKET_ID), timesheet_enabled: true } : undefined;
+
+  it('files a time entry under the mapped Basecamp person', async () => {
+    const fetchMock = installFetch((url) => {
+      const project = timesheetEnabled(url);
+      if (project) return project;
+      if (url.endsWith('/recordings/333/timesheet/entries.json')) {
+        return { id: 444, person: { id: 9001 } };
+      }
+      return undefined;
+    });
+
+    const result = await syncTaskToExternal(
+      { taskId: 'task-1' },
+      buildContext(baseTask, {
+        mappings: { task: null, todo: todoMapping },
+        list: mappedUsers as unknown as jest.Mock
+      })
+    );
+
+    expect(result.status).toBe('synced');
+    const payload = bodyOf(callsTo(fetchMock, '/timesheet/entries.json')[0] as unknown[]);
+    expect(payload.person_id).toBe('9001');
+  });
+
+  it('omits person_id when the installation maps no users', async () => {
+    const fetchMock = installFetch((url) => {
+      const project = timesheetEnabled(url);
+      if (project) return project;
+      if (url.endsWith('/recordings/333/timesheet/entries.json')) return { id: 444 };
+      return undefined;
+    });
+
+    const result = await syncTaskToExternal(
+      { taskId: 'task-1' },
+      buildContext(baseTask, { mappings: { task: null, todo: todoMapping } })
+    );
+
+    expect(result.status).toBe('synced');
+    expect(bodyOf(callsTo(fetchMock, '/timesheet/entries.json')[0] as unknown[]).person_id).toBeUndefined();
+  });
+
+  it('retries without person_id when Basecamp refuses the attribution', async () => {
+    let attempts = 0;
+    const fetchMock = installFetch((url) => {
+      const project = timesheetEnabled(url);
+      if (project) return project;
+      if (url.endsWith('/recordings/333/timesheet/entries.json')) {
+        attempts += 1;
+        // The connected account may not be allowed to log time for someone else.
+        return attempts === 1 ? withStatus({ error: 'Forbidden' }, 403) : { id: 444 };
+      }
+      return undefined;
+    });
+
+    const result = await syncTaskToExternal(
+      { taskId: 'task-1' },
+      buildContext(baseTask, {
+        mappings: { task: null, todo: todoMapping },
+        list: mappedUsers as unknown as jest.Mock
+      })
+    );
+
+    expect(result.status).toBe('synced');
+    const entryCalls = callsTo(fetchMock, '/timesheet/entries.json');
+    expect(entryCalls).toHaveLength(2);
+    expect(bodyOf(entryCalls[0] as unknown[]).person_id).toBe('9001');
+    // The entry still lands, just under the connected account.
+    expect(bodyOf(entryCalls[1] as unknown[]).person_id).toBeUndefined();
+  });
+
+  it('assigns the mapped people on a to-do and keeps unmanaged assignees', async () => {
+    const fetchMock = installFetch((url) => {
+      if (url.endsWith('/todos/900.json')) {
+        return {
+          id: 900,
+          content: 'Spec work',
+          bucket: { id: Number(BUCKET_ID) },
+          // 9001 is mapped, 7777 belongs to someone with no Timesheet account.
+          assignees: [{ id: 9001 }, { id: 7777 }],
+          completion_subscribers: []
+        };
+      }
+      return undefined;
+    });
+
+    const todo = { ...baseTodo, assignedUsers: 'user-1,user-2' } as ToDoDto;
+    const result = await syncTodoToExternal(
+      { entityId: 'todo-1' },
+      buildContext(todo, {
+        mappings: {
+          project: { localId: 'project-1', externalId: BUCKET_ID, syncStatus: 'SYNCED' },
+          todo: { localId: 'todo-1', externalId: '900', syncStatus: 'SYNCED' }
+        },
+        list: mappedUsers as unknown as jest.Mock
+      })
+    );
+
+    expect(result.status).toBe('synced');
+    const updateCall = callsTo(fetchMock, '/todos/900.json').find(
+      (call) => (call as [unknown, RequestInit])[1]?.method === 'PUT'
+    );
+    expect(updateCall).toBeDefined();
+    expect(bodyOf(updateCall as unknown[]).assignee_ids).toEqual([9001, 9002, 7777]);
+  });
+
+  it('carries the Basecamp assignees into the local todo', async () => {
+    const createTodo = jest.fn().mockResolvedValue({ id: 'todo-9', lastUpdate: 1 });
+    installFetch((url) =>
+      url.endsWith('/todos/555.json')
+        ? {
+            id: 555,
+            status: 'active',
+            content: 'Imported to-do',
+            bucket: { id: Number(BUCKET_ID) },
+            assignees: [{ id: 9001 }, { id: 7777 }]
+          }
+        : undefined
+    );
+
+    const result = await handleWebhook(
+      { body: { kind: 'todo_created', recording: { id: 555, type: 'Todo', bucket: { id: Number(BUCKET_ID) } } } },
+      buildContext(baseTodo, { list: mappedUsers as unknown as jest.Mock, data: { createTodo } })
+    );
+
+    expect(result.status).toBe('completed');
+    // Only the mapped person becomes a Timesheet assignee.
+    expect(createTodo).toHaveBeenCalledWith(expect.objectContaining({ assignedUsers: 'user-1' }));
+  });
+
+  it('imports a Basecamp entry as the mapped member', async () => {
+    const createTask = jest.fn().mockResolvedValue({ id: 'task-9', lastUpdate: 1 });
+    installFetch((url) => {
+      const project = timesheetEnabled(url);
+      if (project) return project;
+      if (url.includes(`/projects/${BUCKET_ID}/timesheet.json`)) {
+        return [
+          {
+            id: 777,
+            date: '2026-02-20',
+            hours: '1.5',
+            parent: { id: 333, type: 'Todo' },
+            person: { id: 9001 },
+            updated_at: '2026-02-20T12:00:00.000Z'
+          }
+        ];
+      }
+      return undefined;
+    });
+
+    const result = await runFullSync(
+      undefined,
+      buildContext(baseTask, {
+        list: mappedUsers as unknown as jest.Mock,
+        findByExternal: jest.fn(async (input: { entity: string }) =>
+          input.entity === 'todo' ? { localId: 'todo-1', externalId: '333', syncStatus: 'SYNCED' } : null
+        ) as unknown as jest.Mock,
+        data: { createTask }
+      })
+    );
+
+    expect(result.status).toBe('completed');
+    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({ userId: 'user-1' }));
+  });
+
+  it('skips an entry whose Basecamp person is not mapped', async () => {
+    const createTask = jest.fn();
+    installFetch((url) => {
+      const project = timesheetEnabled(url);
+      if (project) return project;
+      if (url.includes(`/projects/${BUCKET_ID}/timesheet.json`)) {
+        return [
+          {
+            id: 778,
+            date: '2026-02-20',
+            hours: '1.5',
+            parent: { id: 333, type: 'Todo' },
+            person: { id: 7777 },
+            updated_at: '2026-02-20T12:00:00.000Z'
+          }
+        ];
+      }
+      return undefined;
+    });
+
+    const result = await runFullSync(
+      undefined,
+      buildContext(baseTask, {
+        list: mappedUsers as unknown as jest.Mock,
+        findByExternal: jest.fn(async (input: { entity: string }) =>
+          input.entity === 'todo' ? { localId: 'todo-1', externalId: '333', syncStatus: 'SYNCED' } : null
+        ) as unknown as jest.Mock,
+        data: { createTask }
+      })
+    );
+
+    expect(result.status).toBe('completed');
+    // Booking it on whoever the inbound sync runs as would corrupt the reports.
+    expect(createTask).not.toHaveBeenCalled();
+  });
+});
+
+describe('basecamp assignment edge cases', () => {
+  const mappedUsers = jest.fn(async (input: { entity: string }) => {
+    if (input.entity === 'project') {
+      return [{ localId: 'project-1', externalId: BUCKET_ID, syncStatus: 'SYNCED' }];
+    }
+    if (input.entity === 'user') {
+      return [{ localId: 'user-1', externalId: '9001', syncStatus: 'SYNCED' }];
+    }
+    return [];
+  });
+
+  const inboundTodo = (assignees: Array<{ id: number }>) => (url: string) =>
+    url.endsWith('/todos/555.json')
+      ? {
+          id: 555,
+          status: 'active',
+          content: 'Imported to-do',
+          bucket: { id: Number(BUCKET_ID) },
+          assignees
+        }
+      : undefined;
+
+  const webhookInput = {
+    body: { kind: 'todo_assignment_changed', recording: { id: 555, type: 'Todo', bucket: { id: Number(BUCKET_ID) } } }
+  };
+
+  it('clears the local assignment when the Basecamp to-do has nobody assigned', async () => {
+    const createTodo = jest.fn().mockResolvedValue({ id: 'todo-9', lastUpdate: 1 });
+    installFetch(inboundTodo([]));
+
+    await handleWebhook(
+      webhookInput,
+      buildContext(baseTodo, { list: mappedUsers as unknown as jest.Mock, data: { createTodo } })
+    );
+
+    expect(createTodo).toHaveBeenCalledWith(expect.objectContaining({ assignedUsers: '' }));
+  });
+
+  it('leaves the local assignment alone when only unmapped people are assigned', async () => {
+    const createTodo = jest.fn().mockResolvedValue({ id: 'todo-9', lastUpdate: 1 });
+    installFetch(inboundTodo([{ id: 7777 }]));
+
+    await handleWebhook(
+      webhookInput,
+      buildContext(baseTodo, { list: mappedUsers as unknown as jest.Mock, data: { createTodo } })
+    );
+
+    // Ambiguous: guessing would either drop a real assignee or invent one.
+    expect(createTodo).toHaveBeenCalledWith(expect.not.objectContaining({ assignedUsers: expect.anything() }));
+  });
+});
+
+describe('basecamp inbound reconciliation', () => {
+  const mappedProjects = jest.fn(async (input: { entity: string }) =>
+    input.entity === 'project' ? [{ localId: 'project-1', externalId: BUCKET_ID, syncStatus: 'SYNCED' }] : []
+  );
+
+  const activeRecordings = (url: string, items: unknown[]) =>
+    url.includes('/projects/recordings.json') && !url.includes('status=') ? items : undefined;
+
+  it('keeps going when one to-do fails and reports it', async () => {
+    installFetch((url) => activeRecordings(url, [
+      { id: 901, content: 'First', bucket: { id: Number(BUCKET_ID) }, updated_at: '2026-02-20T10:00:00.000Z' },
+      { id: 902, content: 'Second', bucket: { id: Number(BUCKET_ID) }, updated_at: '2026-02-20T11:00:00.000Z' }
+    ]));
+
+    const createTodo = jest.fn()
+      .mockRejectedValueOnce(new Error('Basecamp API POST /todos failed (403): Forbidden'))
+      .mockResolvedValueOnce({ id: 'todo-9', lastUpdate: 1 });
+    const context = buildContext(baseTodo, {
+      list: mappedProjects as unknown as jest.Mock,
+      data: { createTodo }
+    });
+
+    const result = await runFullSync(undefined, context);
+
+    // One un-permissioned to-do used to abort the run before the watermark
+    // advanced, so every later run failed on the same record.
+    expect(result.status).toBe('partial');
+    expect(createTodo).toHaveBeenCalledTimes(2);
+    expect(result.syncedCount).toBe(1);
+    expect((result.details?.failures as unknown[])?.length).toBe(1);
+    expect(context.state.set).toHaveBeenCalledWith('basecamp:last-sync-time', expect.any(String));
+  });
+
+  it('removes local todos for to-dos trashed in Basecamp', async () => {
+    const deleteTodo = jest.fn().mockResolvedValue(undefined);
+    installFetch((url) => {
+      const active = activeRecordings(url, []);
+      if (active) return active;
+      if (url.includes('status=trashed')) {
+        return [{ id: 903, bucket: { id: Number(BUCKET_ID) }, updated_at: '2026-02-20T12:00:00.000Z' }];
+      }
+      return undefined;
+    });
+
+    const result = await runFullSync(
+      undefined,
+      buildContext(baseTodo, {
+        list: mappedProjects as unknown as jest.Mock,
+        findByExternal: jest.fn(async (input: { entity: string; externalId: string }) =>
+          input.entity === 'todo' && input.externalId === '903'
+            ? { localId: 'todo-1', externalId: '903', syncStatus: 'SYNCED' }
+            : null
+        ) as unknown as jest.Mock,
+        data: { deleteTodo }
+      })
+    );
+
+    // The recordings feed lists active records only, so a trashed to-do would
+    // otherwise survive locally whenever the webhook did not deliver.
+    expect(result.details?.todosRemoved).toBe(1);
+    expect(deleteTodo).toHaveBeenCalledWith('todo-1');
+  });
+
+  it('still imports Basecamp time when writing time to Basecamp is off', async () => {
+    const createTask = jest.fn().mockResolvedValue({ id: 'task-9', user: 'user-1', lastUpdate: 1 });
+    installFetch((url) => {
+      const active = activeRecordings(url, []);
+      if (active) return active;
+      if (url.endsWith(`/projects/${BUCKET_ID}.json`)) {
+        return { id: Number(BUCKET_ID), timesheet_enabled: true };
+      }
+      if (url.includes(`/projects/${BUCKET_ID}/timesheet.json`)) {
+        return [{
+          id: 904,
+          date: '2026-02-20',
+          hours: '2.0',
+          parent: { id: 333, type: 'Todo' },
+          updated_at: '2026-02-20T12:00:00.000Z'
+        }];
+      }
+      return undefined;
+    });
+
+    const result = await runFullSync(
+      undefined,
+      buildContext(baseTask, {
+        config: { pushTimeEntries: 'off' },
+        list: mappedProjects as unknown as jest.Mock,
+        findByExternal: jest.fn(async (input: { entity: string }) =>
+          input.entity === 'todo' ? { localId: 'todo-1', externalId: '333', syncStatus: 'SYNCED' } : null
+        ) as unknown as jest.Mock,
+        data: { createTask }
+      })
+    );
+
+    // The option governs writing into Basecamp; reading back is syncDirection's job.
+    expect(result.status).toBe('completed');
+    expect(createTask).toHaveBeenCalledTimes(1);
   });
 });

@@ -62,7 +62,12 @@ export interface BasecampPerson {
   id: number;
   name?: string;
   email_address?: string;
+  /** Clients cannot own timesheet entries, so they are never mapping candidates. */
   client?: boolean;
+  employee?: boolean;
+  admin?: boolean;
+  owner?: boolean;
+  title?: string;
 }
 
 export interface BasecampTodo {
@@ -95,6 +100,18 @@ export interface BasecampTimesheetEntry {
   parent?: BasecampRef;
   bucket?: BasecampRef;
   person?: BasecampPerson;
+}
+
+export interface BasecampTimesheetEntryPayload {
+  date: string;
+  hours: string;
+  description?: string;
+  /**
+   * The Basecamp person the time is for. Defaults to the authenticated user and
+   * must be a non-client member of the project, so it is only sent when the
+   * installation maps that Timesheet user to a Basecamp person.
+   */
+  person_id?: string;
 }
 
 export interface BasecampWebhook {

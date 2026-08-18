@@ -14,11 +14,12 @@ import {
   syncMetadataStamp,
   tryAcquireStateLock
 } from '@timesheet/integration-sdk';
-import { BasecampClient } from './basecampClient';
+import { BasecampClient, isBasecampStatus } from './basecampClient';
 import {
   BasecampConfig,
   BasecampProject,
   BasecampTimesheetEntry,
+  BasecampTimesheetEntryPayload,
   BasecampTodo,
   BasecampWebhookPayload,
   SyncInput
@@ -28,6 +29,7 @@ const SYSTEM = 'basecamp';
 const PROJECT_ENTITY = 'project';
 const TODO_ENTITY = 'todo';
 const TASK_ENTITY = 'task';
+const USER_ENTITY = 'user';
 const SYNC_STATE_KEY = 'basecamp:last-sync-time';
 const ACCOUNT_STATE_KEY = 'basecamp:account-id';
 const TODOLIST_STATE_PREFIX = 'basecamp:todolist:';
@@ -39,8 +41,11 @@ const IMPORT_LOCK_TTL_SECONDS = 60 * 60;
 // The dock entry naming a project's to-do tool.
 const TODOSET_DOCK_NAME = 'todoset';
 // Only to-do events are actionable: Basecamp has no webhook type for timesheet
-// entries, so inbound time changes arrive through the scheduled full sync.
+// entries, so inbound time changes arrive through the scheduled inbound sync.
 const WEBHOOK_TYPES = ['Todo'];
+// Recording states that mean "gone" in Timesheet terms. Basecamp has no hard
+// delete, and its recordings feed lists active records only.
+const REMOVED_RECORDING_STATUSES = ['trashed', 'archived'];
 
 const TODO_STATUS_OPEN = 0;
 const TODO_STATUS_CLOSED = 1;
@@ -56,6 +61,19 @@ export interface SyncBatchCaches {
   projectMappingByLocalId?: Map<string, MappingRecord>;
   todoMappingByLocalId?: Map<string, MappingRecord>;
   taskMappingByLocalId?: Map<string, MappingRecord>;
+  users?: UserMappingIndex;
+}
+
+/**
+ * Both directions of the optional Timesheet user ↔ Basecamp person mapping.
+ * `configured` is false on installations that never mapped anyone, which is the
+ * normal single-user case: everything then behaves as it did before the mapping
+ * existed, writing under the connected Basecamp account.
+ */
+export interface UserMappingIndex {
+  localToExternal: Map<string, string>;
+  externalToLocal: Map<string, string>;
+  configured: boolean;
 }
 
 let sharedClient: BasecampClient | null = null;
@@ -140,6 +158,7 @@ export async function syncTodoToBasecamp(
   }
 
   const completed = todo.status === TODO_STATUS_CLOSED;
+  const users = caches?.users ?? (await loadUserMappingIndex(context));
   let external: BasecampTodo | null = null;
 
   if (todoMapping?.externalId) {
@@ -151,7 +170,7 @@ export async function syncTodoToBasecamp(
     // completion subscribers are carried over explicitly.
     await client.updateTodo(String(external.id), {
       ...buildTodoPayload(todo),
-      assignee_ids: (external.assignees ?? []).map((person) => person.id),
+      assignee_ids: resolveAssigneeIds(todo, users, external),
       completion_subscriber_ids: (external.completion_subscribers ?? []).map((person) => person.id)
     });
     if ((external.completed ?? false) !== completed) {
@@ -163,7 +182,11 @@ export async function syncTodoToBasecamp(
     if (!todolistId) {
       return skip({ reason: 'missing-todolist', bucketId: projectMapping.externalId });
     }
-    external = await client.createTodo(todolistId, buildTodoPayload(todo));
+    const assigneeIds = resolveAssigneeIds(todo, users, null);
+    external = await client.createTodo(todolistId, {
+      ...buildTodoPayload(todo),
+      ...(assigneeIds.length > 0 ? { assignee_ids: assigneeIds } : {})
+    });
     if (completed) {
       await client.setTodoCompletion(String(external.id), true);
       external = (await client.getTodo(String(external.id))) ?? external;
@@ -288,12 +311,23 @@ export async function syncTimesheetTaskToBasecamp(
   const hours = minutesToHours(durationMinutes);
   const description = task.description?.trim() || undefined;
 
-  let external: BasecampTimesheetEntry;
-  if (taskMapping?.externalId) {
-    external = await client.updateTimesheetEntry(taskMapping.externalId, { date, hours, description });
-  } else {
-    external = await client.createTimesheetEntry(todoMapping.externalId, { date, hours, description });
+  // Without a user mapping the entry lands under the connected Basecamp account,
+  // which is right for a single user and wrong for a team.
+  const users = caches?.users ?? (await loadUserMappingIndex(context));
+  const personId = task.user ? users.localToExternal.get(task.user) : undefined;
+  if (users.configured && task.user && !personId) {
+    context.logger.warn('No Basecamp person mapped for user, logging time under the connected account', {
+      taskId: task.id,
+      userId: task.user
+    });
   }
+  const payload = { date, hours, description, ...(personId ? { person_id: personId } : {}) };
+
+  const external: BasecampTimesheetEntry = taskMapping?.externalId
+    ? await writeTimesheetEntry(context, payload, (body) =>
+        client.updateTimesheetEntry(taskMapping.externalId as string, body))
+    : await writeTimesheetEntry(context, payload, (body) =>
+        client.createTimesheetEntry(todoMapping.externalId as string, body));
 
   const upserted: MappingRecord = {
     localId: task.id,
@@ -304,6 +338,7 @@ export async function syncTimesheetTaskToBasecamp(
       todoId: localTodoId,
       hours,
       date,
+      ...(external.person?.id != null ? { personId: String(external.person.id) } : {}),
       ...syncMetadataStamp({ localLastUpdateMillis: getLastUpdateMillis(task) })
     },
     syncStatus: 'SYNCED'
@@ -352,44 +387,99 @@ export async function runBasecampFullSync(
   const sinceMillis = lastSyncTime ? Date.parse(lastSyncTime) : 0;
   const startedAt = new Date().toISOString();
   const client = getOrCreateClient(context);
+  const users = await loadUserMappingIndex(context);
 
   const recordings = await client.listTodoRecordings(bucketIds);
 
+  const failures: Array<{ entity: string; externalId: string; error: string }> = [];
+
   let syncedCount = 0;
   for (const recording of recordings) {
-    if (Number.isFinite(sinceMillis) && sinceMillis > 0) {
-      const updatedMillis = Date.parse(recording.updated_at ?? '');
-      if (Number.isFinite(updatedMillis) && updatedMillis <= sinceMillis) {
-        continue;
-      }
-    }
-    // The recordings feed is a discovery index; refetch when it omits the
-    // to-do body so an incomplete payload never overwrites a local todo.
-    const todo = recording.content ? recording : await client.getTodo(String(recording.id));
-    if (!todo) {
+    if (isOlderThanWatermark(recording.updated_at, sinceMillis)) {
       continue;
     }
-    const synced = await upsertLocalTodoFromBasecampTodo(context, todo, projectByExternalId);
-    if (synced) syncedCount += 1;
+    // One entity must not take the run down with it: a to-do the acting user
+    // may not write, or a single malformed payload, would otherwise abort the
+    // loop before the watermark advances and fail identically on every run.
+    try {
+      // The recordings feed is a discovery index; refetch when it omits the
+      // to-do body so an incomplete payload never overwrites a local todo.
+      const todo = recording.content ? recording : await client.getTodo(String(recording.id));
+      if (!todo) {
+        continue;
+      }
+      const synced = await upsertLocalTodoFromBasecampTodo(context, todo, projectByExternalId, users);
+      if (synced) syncedCount += 1;
+    } catch (err) {
+      context.logger.warn('Failed to import Basecamp to-do', { externalId: String(recording.id), error: String(err) });
+      failures.push({ entity: 'todo', externalId: String(recording.id), error: String(err) });
+    }
   }
 
-  const entriesSynced = await importTimesheetEntries(context, client, projectMappings, sinceMillis);
+  const removedCount = await reconcileRemovedTodos(context, client, bucketIds, sinceMillis, failures);
+  const entriesSynced = await importTimesheetEntries(context, client, projectMappings, sinceMillis, users, failures);
 
   await context.state.set(SYNC_STATE_KEY, startedAt);
 
   return {
     system: SYSTEM,
-    status: 'completed',
-    syncedCount: syncedCount + entriesSynced,
+    status: failures.length > 0 ? 'partial' : 'completed',
+    syncedCount: syncedCount + removedCount + entriesSynced,
     details: {
       syncDirection: syncDirection(context),
       sinceIso: lastSyncTime ?? null,
       mappedProjects: projectMappings.length,
       todosSynced: syncedCount,
+      todosRemoved: removedCount,
       entriesSynced,
-      webhooksRegistered: registered
+      webhooksRegistered: registered,
+      failures: failures.length > 0 ? failures : undefined
     }
   };
+}
+
+/**
+ * Applies removals the webhook never delivered. Basecamp's recordings feed
+ * defaults to active records, so a to-do trashed or archived while the hook was
+ * inactive (or on a client-role installation that cannot create hooks at all)
+ * would otherwise stay in Timesheet forever. Both states are treated as gone,
+ * matching what the webhook handler does with a non-active recording.
+ */
+async function reconcileRemovedTodos(
+  context: IntegrationContext<BasecampConfig>,
+  client: BasecampClient,
+  bucketIds: string[],
+  sinceMillis: number,
+  failures: Array<{ entity: string; externalId: string; error: string }>
+): Promise<number> {
+  let removed = 0;
+  for (const status of REMOVED_RECORDING_STATUSES) {
+    let recordings: BasecampTodo[];
+    try {
+      recordings = await client.listTodoRecordings(bucketIds, status);
+    } catch (err) {
+      context.logger.warn('Failed to list removed Basecamp to-dos', { status, error: String(err) });
+      continue;
+    }
+
+    for (const recording of recordings) {
+      if (isOlderThanWatermark(recording.updated_at, sinceMillis)) {
+        continue;
+      }
+      try {
+        if (await deleteLocalTodoByExternalId(context, String(recording.id))) {
+          removed += 1;
+        }
+      } catch (err) {
+        context.logger.warn('Failed to remove local todo for a removed Basecamp to-do', {
+          externalId: String(recording.id),
+          error: String(err)
+        });
+        failures.push({ entity: 'todo', externalId: String(recording.id), error: String(err) });
+      }
+    }
+  }
+  return removed;
 }
 
 export async function handleBasecampWebhook(
@@ -434,7 +524,8 @@ export async function handleBasecampWebhook(
     };
   }
 
-  const synced = await upsertLocalTodoFromBasecampTodo(context, todo, projectByExternalId);
+  const users = await loadUserMappingIndex(context);
+  const synced = await upsertLocalTodoFromBasecampTodo(context, todo, projectByExternalId, users);
   return {
     system: SYSTEM,
     status: 'completed',
@@ -465,7 +556,8 @@ export async function syncTodoFromBasecamp(
     return { system: SYSTEM, status: 'completed', syncedCount: removed ? 1 : 0, details: { action: 'deleted' } };
   }
 
-  const synced = await upsertLocalTodoFromBasecampTodo(context, todo, projectByExternalId);
+  const users = await loadUserMappingIndex(context);
+  const synced = await upsertLocalTodoFromBasecampTodo(context, todo, projectByExternalId, users);
   return { system: SYSTEM, status: 'completed', syncedCount: synced ? 1 : 0 };
 }
 
@@ -534,7 +626,8 @@ async function ensureWebhooks(
 async function upsertLocalTodoFromBasecampTodo(
   context: IntegrationContext<BasecampConfig>,
   basecampTodo: BasecampTodo,
-  projectByExternalId: Map<string, string>
+  projectByExternalId: Map<string, string>,
+  users: UserMappingIndex
 ): Promise<boolean> {
   if (!basecampTodo?.id) return false;
 
@@ -555,6 +648,7 @@ async function upsertLocalTodoFromBasecampTodo(
   const description = htmlToPlainText(basecampTodo.description) || undefined;
   const status = basecampTodo.completed ? TODO_STATUS_CLOSED : TODO_STATUS_OPEN;
   const dueDate = basecampTodo.due_on ?? undefined;
+  const assignedUsers = resolveAssignedUsers(basecampTodo, users);
 
   if (!todoMapping?.localId) {
     // Import lock: a webhook delivery racing a full sync must not create the
@@ -572,7 +666,8 @@ async function upsertLocalTodoFromBasecampTodo(
         name,
         description,
         status,
-        dueDate
+        dueDate,
+        ...(assignedUsers !== undefined ? { assignedUsers } : {})
       } as ToDoCreateInput);
     } catch (err) {
       await releaseStateLock(context.state, lockKey);
@@ -621,7 +716,8 @@ async function upsertLocalTodoFromBasecampTodo(
     name,
     description,
     status,
-    dueDate
+    dueDate,
+    ...(assignedUsers !== undefined ? { assignedUsers } : {})
   } as ToDoUpdateInput);
 
   await context.mappings.upsert({
@@ -652,12 +748,13 @@ async function importTimesheetEntries(
   context: IntegrationContext<BasecampConfig>,
   client: BasecampClient,
   projectMappings: MappingRecord[],
-  sinceMillis: number
+  sinceMillis: number,
+  users: UserMappingIndex,
+  failures: Array<{ entity: string; externalId: string; error: string }>
 ): Promise<number> {
-  if (context.config?.pushTimeEntries === 'off') {
-    return 0;
-  }
-
+  // Deliberately not gated on pushTimeEntries: that option says whether to
+  // write time *into* Basecamp. Reading Basecamp's own time back is governed by
+  // syncDirection, like every other inbound path.
   let synced = 0;
   for (const mapping of projectMappings) {
     if (!mapping.externalId) continue;
@@ -677,14 +774,19 @@ async function importTimesheetEntries(
     }
 
     for (const entry of entries) {
-      if (Number.isFinite(sinceMillis) && sinceMillis > 0) {
-        const updatedMillis = Date.parse(entry.updated_at ?? '');
-        if (Number.isFinite(updatedMillis) && updatedMillis <= sinceMillis) {
-          continue;
-        }
+      if (isOlderThanWatermark(entry.updated_at, sinceMillis)) {
+        continue;
       }
-      const imported = await upsertLocalTaskFromBasecampEntry(context, entry, mapping.localId);
-      if (imported) synced += 1;
+      try {
+        const imported = await upsertLocalTaskFromBasecampEntry(context, entry, mapping.localId, users);
+        if (imported) synced += 1;
+      } catch (err) {
+        context.logger.warn('Failed to import Basecamp timesheet entry', {
+          externalId: String(entry.id),
+          error: String(err)
+        });
+        failures.push({ entity: 'task', externalId: String(entry.id), error: String(err) });
+      }
     }
   }
   return synced;
@@ -693,7 +795,8 @@ async function importTimesheetEntries(
 async function upsertLocalTaskFromBasecampEntry(
   context: IntegrationContext<BasecampConfig>,
   entry: BasecampTimesheetEntry,
-  localProjectId: string
+  localProjectId: string,
+  users: UserMappingIndex
 ): Promise<boolean> {
   const parentId = entry.parent?.id != null ? String(entry.parent.id) : undefined;
   if (!parentId || entry.parent?.type !== 'Todo') {
@@ -714,6 +817,19 @@ async function upsertLocalTaskFromBasecampEntry(
   const dateRange = entryToTaskDateRange(entry);
   if (!dateRange) return false;
 
+  const personId = entry.person?.id != null ? String(entry.person.id) : undefined;
+  const localUserId = personId ? users.externalToLocal.get(personId) : undefined;
+  if (users.configured && !localUserId) {
+    // An installation that maps users expects per-member attribution. Importing
+    // an unmapped person's time would silently book it on whoever the inbound
+    // sync runs as, which is worse than not importing it at all.
+    context.logger.info('Skipping Basecamp timesheet entry for an unmapped person', {
+      entryId: String(entry.id),
+      personId
+    });
+    return false;
+  }
+
   const externalId = String(entry.id);
   const description = entry.description?.trim() || `Time logged in Basecamp (${formatHours(entry.hours)}h)`;
 
@@ -732,13 +848,26 @@ async function upsertLocalTaskFromBasecampEntry(
 
     let created: TaskDto;
     try {
+      // Attribution is create-only: TaskUpdateInput carries no userId, so a task
+      // imported for the wrong member cannot be moved later.
       created = await context.data.createTask({
         projectId: localProjectId,
         todoId: todoMapping.localId,
         startDateTime: dateRange.startDateTime,
         endDateTime: dateRange.endDateTime,
-        description
+        description,
+        ...(localUserId ? { userId: localUserId } : {})
       } as TaskCreateInput);
+      if (localUserId && created?.user && created.user !== localUserId) {
+        // The backend drops userId when the acting profile has no team features,
+        // and silently books the task on itself. Since attribution cannot be
+        // corrected on update, a wrong owner here is permanent.
+        context.logger.error('Basecamp entry was booked on the wrong member', {
+          entryId: externalId,
+          requestedUserId: localUserId,
+          actualUserId: created.user
+        });
+      }
     } catch (err) {
       await releaseStateLock(context.state, lockKey);
       throw err;
@@ -755,6 +884,7 @@ async function upsertLocalTaskFromBasecampEntry(
         todoId: todoMapping.localId,
         hours: formatHours(entry.hours),
         date: entry.date ?? '',
+        ...(personId ? { personId } : {}),
         ...syncMetadataStamp({
           localLastUpdateMillis: getLastUpdateMillis(created),
           externalUpdatedAt: entry.updated_at,
@@ -801,6 +931,7 @@ async function upsertLocalTaskFromBasecampEntry(
       todoId: todoMapping.localId,
       hours: formatHours(entry.hours),
       date: entry.date ?? '',
+      ...(personId ? { personId } : {}),
       ...syncMetadataStamp({
         localLastUpdateMillis: getLastUpdateMillis(updated),
         externalUpdatedAt: entry.updated_at,
@@ -904,6 +1035,133 @@ async function isTimesheetEnabled(
   // not stay stale for a whole billing cycle.
   await context.state.set(stateKey, enabled, { ttlSeconds: 60 * 60 * 24 });
   return enabled;
+}
+
+// ============================================================================
+// User mapping (Timesheet user ↔ Basecamp person)
+// ============================================================================
+
+/**
+ * Reads the optional user mapping once per invocation. Installations that never
+ * mapped anyone get an empty, unconfigured index and keep the single-user
+ * behavior: writes go under the connected Basecamp account and inbound entries
+ * land on whoever the sync runs as.
+ */
+export async function loadUserMappingIndex(
+  context: IntegrationContext<BasecampConfig>
+): Promise<UserMappingIndex> {
+  let records: MappingRecord[] = [];
+  try {
+    records = await context.mappings.list({ system: SYSTEM, entity: USER_ENTITY });
+  } catch (err) {
+    context.logger.warn('Failed to load Basecamp user mappings', { error: String(err) });
+  }
+
+  const localToExternal = new Map<string, string>();
+  const externalToLocal = new Map<string, string>();
+  for (const record of records) {
+    if (!record.localId || !record.externalId) continue;
+    localToExternal.set(record.localId, record.externalId);
+    // Two Timesheet users may point at one Basecamp person; the first wins for
+    // the inbound direction so imports stay deterministic.
+    if (!externalToLocal.has(record.externalId)) {
+      externalToLocal.set(record.externalId, record.localId);
+    }
+  }
+
+  return { localToExternal, externalToLocal, configured: localToExternal.size > 0 };
+}
+
+/**
+ * Basecamp assignee ids for a todo. Assignees with no Timesheet counterpart are
+ * kept as they are: this sync owns only the mapped half of the list, and a
+ * to-do `PUT` would otherwise drop everyone it does not name.
+ */
+function resolveAssigneeIds(
+  todo: ToDoDto,
+  users: UserMappingIndex,
+  external: BasecampTodo | null
+): number[] {
+  const existing = (external?.assignees ?? []).map((person) => person.id);
+  if (!users.configured) {
+    return existing;
+  }
+
+  const assigned: number[] = [];
+  for (const localUserId of parseAssignedUsers(todo.assignedUsers)) {
+    const personId = Number(users.localToExternal.get(localUserId));
+    if (Number.isFinite(personId) && personId > 0) {
+      assigned.push(personId);
+    }
+  }
+
+  const unmanaged = existing.filter((personId) => !users.externalToLocal.has(String(personId)));
+  return Array.from(new Set([...assigned, ...unmanaged]));
+}
+
+/**
+ * Timesheet's comma separated assignee list for a Basecamp to-do.
+ *
+ * An empty string clears the local assignment, which is what an unassigned
+ * Basecamp to-do means. Undefined leaves it untouched: that is the ambiguous
+ * case where Basecamp names only people this installation has not mapped, and
+ * guessing would either drop a real assignee or invent one.
+ */
+function resolveAssignedUsers(basecampTodo: BasecampTodo, users: UserMappingIndex): string | undefined {
+  if (!users.configured) {
+    return undefined;
+  }
+  const assignees = basecampTodo.assignees ?? [];
+  if (assignees.length === 0) {
+    return '';
+  }
+  const localIds = assignees
+    .map((person) => users.externalToLocal.get(String(person.id)))
+    .filter((localId): localId is string => !!localId);
+  return localIds.length > 0 ? Array.from(new Set(localIds)).join(',') : undefined;
+}
+
+/** True when an external record predates the last completed inbound sync. */
+function isOlderThanWatermark(updatedAt: string | undefined, sinceMillis: number): boolean {
+  if (!Number.isFinite(sinceMillis) || sinceMillis <= 0) {
+    return false;
+  }
+  const updatedMillis = Date.parse(updatedAt ?? '');
+  return Number.isFinite(updatedMillis) && updatedMillis <= sinceMillis;
+}
+
+function parseAssignedUsers(assignedUsers: string | undefined): string[] {
+  if (!assignedUsers) return [];
+  return assignedUsers
+    .split(',')
+    .map((id) => id.trim())
+    .filter((id) => id.length > 0);
+}
+
+/**
+ * Writes a timesheet entry, retrying once without `person_id` when Basecamp
+ * refuses the attribution. The connected account may not be allowed to log time
+ * for someone else, and dropping the entry entirely is worse than dropping the
+ * person it is filed under.
+ */
+async function writeTimesheetEntry(
+  context: IntegrationContext<BasecampConfig>,
+  payload: BasecampTimesheetEntryPayload,
+  write: (payload: BasecampTimesheetEntryPayload) => Promise<BasecampTimesheetEntry>
+): Promise<BasecampTimesheetEntry> {
+  try {
+    return await write(payload);
+  } catch (err) {
+    if (!payload.person_id || !(isBasecampStatus(err, 403) || isBasecampStatus(err, 422))) {
+      throw err;
+    }
+    context.logger.warn('Basecamp refused the mapped person, writing the entry under the connected account', {
+      personId: payload.person_id,
+      error: String(err)
+    });
+    const { person_id: _personId, ...withoutPerson } = payload;
+    return write(withoutPerson);
+  }
 }
 
 // ============================================================================

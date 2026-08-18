@@ -48,6 +48,68 @@ export interface SyncBatchCaches {
   userMappingByLocalId?: Map<string, MappingRecord>;
 }
 
+/**
+ * The Timesheet user ↔ ClickUp member mapping, keyed both ways. `configured` is
+ * false on installations that never mapped anyone, which is the normal
+ * single-user case and keeps the previous behavior.
+ */
+export interface UserMappingIndex {
+  localToExternal: Map<string, string>;
+  externalToLocal: Map<string, string>;
+  configured: boolean;
+}
+
+/**
+ * Reads the user mapping once per invocation. Inbound work runs as the
+ * installing admin on organization installs, so without this the people a
+ * ClickUp task is assigned to are lost on the way in.
+ */
+export async function loadUserMappingIndex(
+  context: IntegrationContext<ClickUpConfig>
+): Promise<UserMappingIndex> {
+  let records: MappingRecord[] = [];
+  try {
+    records = await context.mappings.list({ system: SYSTEM, entity: USER_ENTITY });
+  } catch (err) {
+    context.logger.warn('Failed to load ClickUp user mappings', { error: String(err) });
+  }
+
+  const localToExternal = new Map<string, string>();
+  const externalToLocal = new Map<string, string>();
+  for (const record of records) {
+    if (!record.localId || !record.externalId) continue;
+    localToExternal.set(record.localId, record.externalId);
+    // Two Timesheet users may point at one ClickUp member; the first wins
+    // inbound so imports stay deterministic.
+    if (!externalToLocal.has(record.externalId)) {
+      externalToLocal.set(record.externalId, record.localId);
+    }
+  }
+
+  return { localToExternal, externalToLocal, configured: localToExternal.size > 0 };
+}
+
+/**
+ * Timesheet's comma separated assignee list for a ClickUp task.
+ *
+ * An empty string clears the local assignment, which is what an unassigned
+ * ClickUp task means. Undefined leaves it untouched: that is the ambiguous case
+ * where ClickUp names only people this installation has not mapped.
+ */
+export function resolveAssignedUsers(external: ClickUpTask, users: UserMappingIndex): string | undefined {
+  if (!users.configured) {
+    return undefined;
+  }
+  const assignees = external.assignees ?? [];
+  if (assignees.length === 0) {
+    return '';
+  }
+  const localIds = assignees
+    .map((person) => (person?.id != null ? users.externalToLocal.get(String(person.id)) : undefined))
+    .filter((localId): localId is string => !!localId);
+  return localIds.length > 0 ? Array.from(new Set(localIds)).join(',') : undefined;
+}
+
 let sharedClient: ClickUpClient | null = null;
 
 export function resetSharedClient(): void {
@@ -368,6 +430,7 @@ export async function runClickUpFullSync(
     ? rawSince
     : undefined;
   const startedAt = Date.now();
+  const inboundUsers = await loadUserMappingIndex(context);
   let syncedCount = 0;
 
   for (const mapping of projectMappings) {
@@ -377,7 +440,7 @@ export async function runClickUpFullSync(
     }
     const tasks = await client.listTasksForList(listId, { dateUpdatedGt: sinceMs });
     for (const task of tasks) {
-      const synced = await syncSingleExternalTask(context, mapping, task);
+      const synced = await syncSingleExternalTask(context, mapping, task, inboundUsers);
       if (synced) {
         syncedCount += 1;
       }
@@ -457,7 +520,8 @@ export async function handleClickUpWebhook(
     return { system: SYSTEM, status: 'ignored', syncedCount: 0, details: { reason: 'no-matching-project-mapping', taskId } };
   }
 
-  const synced = await syncSingleExternalTask(context, projectMapping, externalTask);
+  const synced = await syncSingleExternalTask(
+    context, projectMapping, externalTask, await loadUserMappingIndex(context));
   return {
     system: SYSTEM,
     status: 'completed',
@@ -491,7 +555,8 @@ export async function syncTaskFromClickUp(
     return { system: SYSTEM, status: 'ignored', syncedCount: 0, details: { reason: 'no-matching-project-mapping' } };
   }
 
-  const synced = await syncSingleExternalTask(context, projectMapping, externalTask);
+  const synced = await syncSingleExternalTask(
+    context, projectMapping, externalTask, await loadUserMappingIndex(context));
   return {
     system: SYSTEM,
     status: 'completed',
@@ -504,7 +569,8 @@ export async function syncTaskFromClickUp(
 async function syncSingleExternalTask(
   context: IntegrationContext<ClickUpConfig>,
   projectMapping: MappingRecord,
-  external: ClickUpTask
+  external: ClickUpTask,
+  users: UserMappingIndex
 ): Promise<boolean> {
   if (!external?.id) {
     return false;
@@ -521,6 +587,7 @@ async function syncSingleExternalTask(
   const dueDateMs = parseClickUpDate(external.due_date);
   const dueDate = dueDateMs ? new Date(dueDateMs).toISOString() : undefined;
   const status = mapClickUpStatusToLocal(external.status?.type);
+  const assignedUsers = resolveAssignedUsers(external, users);
 
   if (!todoMapping?.localId) {
     // Import lock: a webhook delivery racing a full sync must not create the
@@ -540,7 +607,8 @@ async function syncSingleExternalTask(
         name,
         description,
         dueDate,
-        status
+        status,
+        ...(assignedUsers !== undefined ? { assignedUsers } : {})
       } as ToDoCreateInput);
     } catch (err) {
       await releaseStateLock(context.state, lockKey);
@@ -590,7 +658,8 @@ async function syncSingleExternalTask(
     name,
     description,
     dueDate,
-    status
+    status,
+    ...(assignedUsers !== undefined ? { assignedUsers } : {})
   } as ToDoUpdateInput);
 
   await context.mappings.upsert({

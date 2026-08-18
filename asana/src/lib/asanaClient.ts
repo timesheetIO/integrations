@@ -5,6 +5,7 @@ import {
   AsanaSingleResponse,
   AsanaTask,
   AsanaTimeTrackingEntry,
+  AsanaUser,
   AsanaWorkspace
 } from './types';
 
@@ -43,6 +44,33 @@ export class AsanaClient {
       id: ws.gid,
       name: ws.name ?? ws.gid
     }));
+  }
+
+  /**
+   * Members of the configured workspaces. Asana scopes users to a workspace, so
+   * without one configured this unions the workspaces the token can see.
+   */
+  async listUsers(): Promise<ExternalEntity[]> {
+    const workspaceIds = this.workspaceId
+      ? [this.workspaceId]
+      : (await this.listWorkspaces()).map((ws) => ws.id);
+
+    const byId = new Map<string, ExternalEntity>();
+    for (const wsId of workspaceIds) {
+      const users = await this.paginate<AsanaUser>('/users', {
+        workspace: wsId,
+        opt_fields: 'name,email'
+      });
+      for (const user of users) {
+        if (!user.gid || byId.has(user.gid)) continue;
+        byId.set(user.gid, {
+          id: user.gid,
+          name: user.name ?? user.email ?? user.gid,
+          email: user.email ?? ''
+        });
+      }
+    }
+    return Array.from(byId.values());
   }
 
   async listProjects(): Promise<ExternalEntity[]> {

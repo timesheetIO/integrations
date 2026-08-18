@@ -36,16 +36,21 @@ Access tokens expire after two weeks and are refreshed through the runtime's
 
 ## Mappings
 
-- **Project mapping**: Timesheet project to Basecamp project (bucket).
+- **Project mapping** (required): Timesheet project to Basecamp project (bucket).
+- **User mapping** (optional): Timesheet user to Basecamp person. Only teams need it. The
+  candidates are the non-client people on the mapped projects, because a Basecamp timesheet
+  entry's person must be a member of the project it is filed under.
 
 ## Triggers
 
 - **Todo Changed** (event): syncs todo create, update, and delete events to Basecamp to-dos.
 - **Time Entry Changed** (event): logs Timesheet time entries as Basecamp timesheet entries.
 - **Basecamp Webhook** (webhook): receives inbound to-do changes from Basecamp.
-- **Scheduled Full Sync** (daily at 02:00 UTC): runs a complete reconciliation sync and
+- **Scheduled Full Sync** (daily at 02:00 UTC): drains the outbound change stream. On an
+  organization install the runtime fans this out to one run per member.
+- **Scheduled Inbound Sync** (every 6 hours): pulls Basecamp changes into Timesheet and
   re-asserts the per-project webhooks.
-- **Manual Sync** (user action): runs a full sync from the integration settings page.
+- **Manual Sync** (user action): runs the same inbound sync from the integration settings page.
 - **Register Webhooks** (user action): creates the per-project webhooks on demand.
 
 ## Behavior notes
@@ -67,11 +72,50 @@ exist, so that path is not wired up.
 is treated as an untrusted hint: `handleWebhook` refetches the to-do with the installation's
 own token and drops anything outside a mapped bucket. Hooks are created one per mapped
 project with `types: ["Todo"]`. Basecamp deactivates a hook after 10 failed deliveries, so
-the scheduled sync replaces inactive hooks on each run. Client-role Basecamp users get
+the scheduled inbound sync replaces inactive hooks on each run. Client-role Basecamp users get
 `403 Forbidden` on webhook endpoints; those installations fall back to scheduled sync only.
 
 **No webhook type exists for timesheet entries.** Inbound time changes are picked up by the
-scheduled full sync reading `GET /projects/{id}/timesheet.json`, not in real time.
+scheduled inbound sync reading `GET /projects/{id}/timesheet.json`, not in real time. That
+trigger exists because the outbound `full-sync` trigger runs in sync mode, once per member
+on an organization install, and inbound reconciliation must run once per installation.
+`pushTimeEntries` does not gate this: it says whether to write time *into* Basecamp, while
+reading Basecamp's own time back is governed by `syncDirection` like every other inbound path.
+
+**Removals are read, never inferred.** `/projects/recordings.json` lists active records
+only, so a to-do trashed or archived while the webhook was inactive would never reach
+Timesheet. The inbound sync therefore also reads the `trashed` and `archived` feeds and
+deletes the mapped local todos, rather than treating an absence from the active feed as a
+deletion. Timesheet entries have no equivalent: Basecamp exposes no removed-entries feed, so
+an entry deleted in Basecamp leaves its Timesheet task in place.
+
+**One entity never fails the run.** Inbound loops isolate each to-do and each entry: a record
+the acting user may not write is logged, counted in `details.failures`, and the run reports
+`partial` with its watermark advanced. Without that, a single un-permissioned project would
+abort every inbound run at the same record forever.
+
+**Attribution on team installs.** Without the user mapping every write lands under the
+connected Basecamp account, which is right for one person and wrong for a team. With it:
+
+- Outbound entries carry `person_id`, so each member's time shows up under their own
+  Basecamp person. A member with no mapping still syncs, under the connected account, with a
+  warning. Basecamp requires the person to be a non-client member of the project, and the
+  connected account may not be allowed to log time for others at all, so a `403`/`422` on
+  the attributed write is retried once without `person_id`: losing the attribution beats
+  losing the entry.
+- Inbound entries are created for the mapped member through `TaskCreateInput.userId`. Once
+  the installation maps anyone, entries from unmapped Basecamp people are skipped rather
+  than booked on whoever the inbound sync runs as. Attribution is create-only, since
+  `TaskUpdateInput` carries no `userId`, so an entry imported before its person was mapped
+  keeps the owner it was created with.
+- To-do assignees sync both ways. Basecamp people with no Timesheet counterpart stay
+  assigned: a to-do `PUT` drops everyone it does not name, so the plugin re-sends them.
+  Local assignment is only ever set from at least one mapped assignee, never cleared from a
+  half-mapped Basecamp side.
+
+Inbound writes run as the installing admin (webhooks and the inbound schedule are background
+triggers), so that account needs project-manager or admin rights on the mapped projects.
+Outbound runs as the member whose change stream is being drained.
 
 **Rate limits are per IP.** Basecamp allows roughly 50 requests per 10 seconds per IP, and
 the shared plugin runtime pool consumes that budget collectively. The client honors

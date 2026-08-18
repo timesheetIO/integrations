@@ -61,6 +61,8 @@ export interface ClickUpTask {
   list?: { id: string; name?: string };
   team_id?: string;
   archived?: boolean;
+  /** People the ClickUp task is assigned to; mapped onto Timesheet assignees. */
+  assignees?: Array<{ id?: number | string; username?: string; email?: string }>;
 }
 
 export interface ClickUpTeamsResponse {

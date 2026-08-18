@@ -60,6 +60,47 @@ export interface SyncBatchCaches {
   userMappingByLocalId?: Map<string, MappingRecord>;
 }
 
+/**
+ * The Timesheet user ↔ monday.com user mapping, keyed both ways. `configured`
+ * is false on installations that never mapped anyone, which is the normal
+ * single-user case and keeps the previous behavior.
+ */
+export interface UserMappingIndex {
+  localToExternal: Map<string, string>;
+  externalToLocal: Map<string, string>;
+  configured: boolean;
+}
+
+/**
+ * Reads the user mapping once per invocation. Organization installs run their
+ * inbound work as the installing admin, so without this every member's
+ * monday.com time would be booked on that admin.
+ */
+export async function loadUserMappingIndex(
+  context: IntegrationContext<MondayConfig>
+): Promise<UserMappingIndex> {
+  let records: MappingRecord[] = [];
+  try {
+    records = await context.mappings.list({ system: SYSTEM, entity: USER_ENTITY });
+  } catch (err) {
+    context.logger.warn('Failed to load monday.com user mappings', { error: String(err) });
+  }
+
+  const localToExternal = new Map<string, string>();
+  const externalToLocal = new Map<string, string>();
+  for (const record of records) {
+    if (!record.localId || !record.externalId) continue;
+    localToExternal.set(record.localId, record.externalId);
+    // Two Timesheet users may point at one monday.com user; the first wins
+    // inbound so imports stay deterministic.
+    if (!externalToLocal.has(record.externalId)) {
+      externalToLocal.set(record.externalId, record.localId);
+    }
+  }
+
+  return { localToExternal, externalToLocal, configured: localToExternal.size > 0 };
+}
+
 let sharedClient: MondayClient | null = null;
 
 export function resetSharedClient(): void {
@@ -451,6 +492,7 @@ export async function runMondayFullSync(
 
   if (allowInbound) {
     const client = getOrCreateClient(context);
+    const inboundUsers = await loadUserMappingIndex(context);
     for (const mapping of projectMappings) {
       const boardId = mapping.externalId;
       if (!boardId) continue;
@@ -458,7 +500,7 @@ export async function runMondayFullSync(
         const items = await client.listItemsForBoard(boardId, { updatedSinceMs: sinceMs });
         for (const item of items) {
           try {
-            const synced = await syncSingleExternalItem(context, mapping, item);
+            const synced = await syncSingleExternalItem(context, mapping, item, inboundUsers);
             if (synced) inboundCount += 1;
           } catch (err) {
             errors.push({ direction: 'inbound', entityType: 'item', entityId: item.id, error: String(err) });
@@ -594,7 +636,8 @@ export async function handleMondayWebhook(
     return { system: SYSTEM, status: 'ignored', syncedCount: 0, details: { reason: 'no-matching-project-mapping', itemId } };
   }
 
-  const synced = await syncSingleExternalItem(context, projectMapping, externalItem);
+  const synced = await syncSingleExternalItem(
+    context, projectMapping, externalItem, await loadUserMappingIndex(context));
   return {
     system: SYSTEM,
     status: 'completed',
@@ -628,7 +671,8 @@ export async function syncTaskFromMonday(
     return { system: SYSTEM, status: 'ignored', syncedCount: 0, details: { reason: 'no-matching-project-mapping' } };
   }
 
-  const synced = await syncSingleExternalItem(context, projectMapping, externalItem);
+  const synced = await syncSingleExternalItem(
+    context, projectMapping, externalItem, await loadUserMappingIndex(context));
   return {
     system: SYSTEM,
     status: 'completed',
@@ -640,7 +684,8 @@ export async function syncTaskFromMonday(
 async function syncSingleExternalItem(
   context: IntegrationContext<MondayConfig>,
   projectMapping: MappingRecord,
-  external: MondayItem
+  external: MondayItem,
+  users: UserMappingIndex
 ): Promise<boolean> {
   if (!external?.id) {
     return false;
@@ -649,7 +694,7 @@ async function syncSingleExternalItem(
   // Subitems represent Timesheet tasks (time entries) under their parent ToDo.
   // Parent items represent Timesheet ToDos. Route inbound by parent_item.
   if (external.parent_item?.id) {
-    return syncInboundTaskFromSubitem(context, projectMapping, external);
+    return syncInboundTaskFromSubitem(context, projectMapping, external, users);
   }
   return syncInboundTodoFromItem(context, projectMapping, external);
 }
@@ -657,7 +702,8 @@ async function syncSingleExternalItem(
 async function syncInboundTaskFromSubitem(
   context: IntegrationContext<MondayConfig>,
   projectMapping: MappingRecord,
-  external: MondayItem
+  external: MondayItem,
+  users: UserMappingIndex
 ): Promise<boolean> {
   const subitemBoardId = external.board?.id;
   const cols = subitemBoardId
@@ -676,6 +722,19 @@ async function syncInboundTaskFromSubitem(
 
   const description = external.name ?? '';
 
+  const externalUserId = external.creator_id != null ? String(external.creator_id) : undefined;
+  const localUserId = externalUserId ? users.externalToLocal.get(externalUserId) : undefined;
+  if (users.configured && !localUserId) {
+    // An installation that maps users expects per-member attribution. Importing
+    // an unmapped person's time would book it on whoever the inbound sync runs
+    // as, which on an organization install is the installing admin.
+    context.logger.info('Skipping monday.com subitem for an unmapped user', {
+      externalId: external.id,
+      mondayUserId: externalUserId
+    });
+    return false;
+  }
+
   if (!taskMapping?.localId) {
     // Import lock: a webhook delivery racing a full sync must not create the
     // same task twice. Held for the TTL; released only when the create fails.
@@ -689,12 +748,24 @@ async function syncInboundTaskFromSubitem(
 
     let created: TaskDto;
     try {
+      // Attribution is create-only: TaskUpdateInput carries no userId, so a task
+      // imported for the wrong member cannot be moved later.
       created = await context.data.createTask({
         projectId: projectMapping.localId,
         startDateTime: dateRange.startDateTime,
         endDateTime: dateRange.endDateTime,
-        description
+        description,
+        ...(localUserId ? { userId: localUserId } : {})
       } as TaskCreateInput);
+      if (localUserId && created?.user && created.user !== localUserId) {
+        // The backend drops userId when the acting profile has no team features
+        // and books the task on itself instead.
+        context.logger.error('monday.com subitem was booked on the wrong member', {
+          externalId: external.id,
+          requestedUserId: localUserId,
+          actualUserId: created.user
+        });
+      }
     } catch (err) {
       await releaseStateLock(context.state, lockKey);
       throw err;

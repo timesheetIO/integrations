@@ -22,6 +22,9 @@ OAuth 2.0 against Asana.
 ## Mappings
 
 - **Project mapping**: Timesheet project to Asana project.
+- **User mapping**: Timesheet user to Asana user. Optional, and only needed for teams. The
+  candidates are the members of the configured workspace, or of every workspace the token can
+  see when none is configured.
 
 ## Triggers
 
@@ -30,6 +33,18 @@ OAuth 2.0 against Asana.
 - **Asana Webhook** (webhook): receives inbound task changes from Asana.
 - **Scheduled Full Sync** (daily at 02:00 UTC): runs a complete reconciliation sync.
 - **Manual Sync** (user action): runs a full sync from the integration settings page.
+
+## Organization installs
+
+Inbound work runs as the installing admin, so without a user mapping every member's imported
+time is booked on that admin. With the mapping in place, an imported time entry is booked on the member behind its `created_by`. Once any user is mapped,
+records belonging to someone this installation has not mapped are skipped rather than booked
+on the admin: attribution is create-only, because `TaskUpdateInput` carries no userId, so a
+wrong owner can never be corrected afterwards.
+
+Outbound attribution is not possible: Asana marks `created_by` on a time tracking entry as
+read-only, so entries Timesheet writes always appear under the connected Asana account. Only
+the inbound direction can be attributed per member.
 
 ## Development
 

@@ -41,6 +41,35 @@ export class NotionClient {
     return me?.id ? me : null;
   }
 
+  /**
+   * People in the workspace. Bots are filtered out: only a person can be the
+   * human author of a time log, and the integration's own bot is what pages it
+   * wrote are created by.
+   */
+  async listUsers(): Promise<ExternalEntity[]> {
+    const out: ExternalEntity[] = [];
+    let cursor: string | undefined;
+    do {
+      const query: Record<string, string> = { page_size: String(NotionClient.PAGE_SIZE) };
+      if (cursor) {
+        query.start_cursor = cursor;
+      }
+      const response = await this.request<NotionListResponse<NotionUser>>('GET', '/v1/users', query);
+      for (const user of response?.results ?? []) {
+        if (!user?.id || user.type === 'bot') {
+          continue;
+        }
+        out.push({
+          id: user.id,
+          name: user.name ?? user.person?.email ?? user.id,
+          email: user.person?.email ?? ''
+        });
+      }
+      cursor = response?.has_more && response.next_cursor ? response.next_cursor : undefined;
+    } while (cursor);
+    return out;
+  }
+
   // Only databases the user shared with the integration during OAuth are
   // visible to search — that selection step is Notion's permission model.
   async searchDatabases(): Promise<ExternalEntity[]> {

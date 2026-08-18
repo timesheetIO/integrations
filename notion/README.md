@@ -30,6 +30,8 @@ All requests are pinned to `Notion-Version: 2022-06-28`. Notion rate-limits at r
 ## Mappings
 
 - **Project mapping** (required): Timesheet project to Notion database. Each page (row) of the database is a Timesheet todo.
+- **User mapping**: Timesheet user to Notion user. Optional, and only needed for teams. Bots are
+  excluded from the candidates, including this integration's own bot.
 
 ## Property discovery
 
@@ -64,6 +66,19 @@ Notion has no hard delete via API: outbound deletes archive the page (move to tr
 ### Echo suppression caveat
 
 Notion truncates `last_edited_time` to the minute. The standard SDK guards apply (`isAlreadySyncedLocalChange` outbound, `isStaleExternalChange` on `lastEditedTime` inbound), but a genuine Notion edit within the same minute as the plugin's own write compares stale and is picked up by the next edit or scheduled full sync.
+
+## Organization installs
+
+Inbound work runs as the installing admin, so without a user mapping every member's imported
+time is booked on that admin. With the mapping in place, an imported time log is booked on the member behind the page's `created_by`. Once any user is mapped,
+records belonging to someone this installation has not mapped are skipped rather than booked
+on the admin: attribution is create-only, because `TaskUpdateInput` carries no userId, so a
+wrong owner can never be corrected afterwards.
+
+Outbound attribution is not wired up: pages Timesheet writes are created by the integration's
+own bot user, which is what Notion records as `created_by` for anything an integration token
+creates. A `people` property on the time-log database could carry the member instead, but that
+would need a new property mapping.
 
 ## Development
 

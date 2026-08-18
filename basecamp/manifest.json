@@ -1,7 +1,7 @@
 {
   "id": "basecamp-sync",
   "name": "Basecamp Sync",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Synchronize Timesheet todos and time entries with Basecamp",
   "longDescription": "Bidirectional synchronization between Timesheet and Basecamp. Timesheet todos are mirrored 1:1 with Basecamp to-dos in the mapped project, and Timesheet time entries attached to a todo are logged as Basecamp timesheet entries on the corresponding to-do. Changes made in Basecamp flow back through project webhooks and scheduled syncs. Writing time into Basecamp needs the paid Timesheets add-on on the Basecamp project; without it, to-do sync keeps working and time entries stay in Timesheet only.",
   "icon": "basecamp",
@@ -56,7 +56,7 @@
         ],
         "default": "auto",
         "x-ui-widget": "radio",
-        "x-ui-help": "Requires the paid Timesheets add-on on the Basecamp project. Projects without it are skipped automatically."
+        "x-ui-help": "Requires the paid Timesheets add-on on the Basecamp project. Projects without it are skipped automatically. This only controls writing into Basecamp; use the sync direction to stop reading Basecamp time back."
       },
       "todoListName": {
         "type": "string",
@@ -87,6 +87,23 @@
         },
         "required": true,
         "minMappings": 1
+      },
+      {
+        "id": "users",
+        "title": "User Mapping",
+        "description": "Map Timesheet users to Basecamp people. Optional. Only needed for teams: it makes each member's time appear under their own Basecamp person instead of the connected account, and keeps to-do assignment in step.",
+        "localEntity": {
+          "type": "user",
+          "label": "Timesheet User",
+          "display": "{{displayName}}"
+        },
+        "externalEntity": {
+          "type": "person",
+          "label": "Basecamp Person",
+          "fetchAction": "list-external-users"
+        },
+        "required": false,
+        "minMappings": 0
       }
     ]
   },
@@ -145,6 +162,16 @@
         "task.delete"
       ],
       "actionId": "handle-sync-batch"
+    },
+    {
+      "id": "inbound-reconcile",
+      "type": "schedule",
+      "name": "Scheduled Inbound Sync",
+      "description": "Pull Basecamp to-do and timesheet changes into Timesheet",
+      "schedule": "0 */6 * * *",
+      "timezone": "UTC",
+      "configurable": true,
+      "actionId": "run-full-sync"
     },
     {
       "id": "manual-sync",
@@ -220,6 +247,11 @@
     {
       "id": "list-external-projects",
       "handler": "listExternalProjects",
+      "internal": true
+    },
+    {
+      "id": "list-external-users",
+      "handler": "listExternalUsers",
       "internal": true
     }
   ],

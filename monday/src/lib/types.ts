@@ -49,6 +49,8 @@ export interface MondayItem {
   id: string;
   name?: string;
   state?: string;
+  /** The monday.com user who created the item; used for inbound attribution. */
+  creator_id?: string | number;
   created_at?: string;
   updated_at?: string;
   board?: { id?: string; name?: string };
