@@ -222,10 +222,12 @@ describe('notion plugin', () => {
       Due: { date: { start: '2026-03-01' } }
     });
 
-    // Discovered properties are cached in state for the next run.
+    // Discovered properties are cached in state for the next run, but only for a
+    // while: properties added after setup have to be picked up eventually.
     expect(context.state.set).toHaveBeenCalledWith(
       'notion:db-props:db-1',
-      expect.objectContaining({ titleName: 'Name', statusName: 'Status', dateName: 'Due', doneOption: 'Done' })
+      expect.objectContaining({ titleName: 'Name', statusName: 'Status', dateName: 'Due', doneOption: 'Done' }),
+      expect.objectContaining({ ttlSeconds: expect.any(Number) })
     );
     expect(upsert).toHaveBeenCalledWith(
       expect.objectContaining({

@@ -9,6 +9,7 @@ import { runFullSync as mondayFullSync } from '../monday/src/handlers/runFullSyn
 import { syncTaskToExternal as mondaySyncTask } from '../monday/src/handlers/syncTaskToExternal';
 import { resetSharedClient as resetMonday } from '../monday/src/lib/taskSync';
 import { runFullSync as notionFullSync } from '../notion/src/handlers/runFullSync';
+import { syncTaskToExternal as notionSyncTask } from '../notion/src/handlers/syncTaskToExternal';
 import { resetSharedClient as resetNotion } from '../notion/src/lib/taskSync';
 
 /**
@@ -493,5 +494,69 @@ describe('monday time entry visibility', () => {
     );
 
     expect(created).toEqual([]);
+  });
+});
+
+describe('notion time-log naming', () => {
+  const database = {
+    id: 'time-log-db',
+    properties: {
+      Beschreibung: { id: 'title', name: 'Beschreibung', type: 'title' },
+      Zeitraum: { id: 'date', name: 'Zeitraum', type: 'date' },
+      Nettostunden: { id: 'num', name: 'Nettostunden', type: 'number' }
+    }
+  };
+
+  const routeNotion = (captured: Record<string, unknown>[]) => (url: string, init?: RequestInit) => {
+    if (url.includes('/v1/pages')) {
+      captured.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return { id: 'page-1', last_edited_time: '2026-02-20T12:00:00.000Z' };
+    }
+    if (url.includes('/v1/databases/')) {
+      return database;
+    }
+    return { results: [], has_more: false };
+  };
+
+  /** The change payload carries only a project id, so the title has to be read back. */
+  const taskWithoutDescription = {
+    id: 'task-1',
+    user: 'user-1',
+    running: false,
+    deleted: false,
+    lastUpdate: 1_700_000_000_000,
+    startDateTime: '2026-08-18T17:28:00.000Z',
+    endDateTime: '2026-08-18T19:02:00.000Z',
+    projectId: 'project-1'
+  } as unknown as Record<string, unknown>;
+
+  const contextFor = (getProject: jest.Mock) =>
+    buildContext(
+      { timeLogDatabaseId: 'time-log-db' },
+      mappings({ list: () => [], get: () => null }),
+      { getTask: jest.fn().mockResolvedValue(taskWithoutDescription), getProject }
+    );
+
+  it('names the row after the project when the entry has no description', async () => {
+    const captured: Record<string, unknown>[] = [];
+    installFetch(routeNotion(captured));
+    const getProject = jest.fn().mockResolvedValue({ id: 'project-1', title: 'Website Relaunch' });
+
+    await notionSyncTask({ taskId: 'task-1', item: taskWithoutDescription } as never, contextFor(getProject));
+
+    const props = captured[0]?.properties as Record<string, { title?: Array<{ text?: { content?: string } }> }>;
+    expect(props?.Beschreibung?.title?.[0]?.text?.content).toBe('Website Relaunch 2026-08-18 17:28-19:02');
+  });
+
+  it('reads the project once for a batch', async () => {
+    const captured: Record<string, unknown>[] = [];
+    installFetch(routeNotion(captured));
+    const getProject = jest.fn().mockResolvedValue({ id: 'project-1', title: 'Website Relaunch' });
+    const context = contextFor(getProject);
+
+    await notionSyncTask({ taskId: 'task-1', item: taskWithoutDescription } as never, context);
+    await notionSyncTask({ taskId: 'task-1', item: taskWithoutDescription } as never, context);
+
+    expect(getProject).toHaveBeenCalledTimes(1);
   });
 });

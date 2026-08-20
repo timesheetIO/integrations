@@ -1,7 +1,7 @@
 {
   "id": "notion-sync",
   "name": "Notion Sync",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "Synchronize Timesheet todos and time entries with Notion databases",
   "longDescription": "Bidirectional synchronization between Timesheet and Notion. Timesheet todos are mirrored 1:1 with pages in the mapped Notion database, and Timesheet time entries (tasks) sync as rows of an optional time-log database, related to the todo's page. Changes made in Notion flow back through webhooks and scheduled syncs.",
   "icon": "notion",
@@ -49,6 +49,12 @@
         "type": "string",
         "title": "Time-Log Database",
         "x-ui-help": "Optional. Notion database id for time entries. When set, Timesheet tasks sync as rows of this database (title, date range, hours, and a relation to the todo's page)."
+      },
+      "timeLogNameTemplate": {
+        "type": "string",
+        "title": "Time entry name",
+        "default": "{projectTitle} {startDate} {startTime}-{endTime}",
+        "x-ui-help": "Used as the row name when a time entry has no description. Placeholders: {projectTitle}, {startDate}, {startTime}, {endDate}, {endTime}, {taskId}."
       },
       "statusProperty": {
         "type": "string",

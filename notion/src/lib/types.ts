@@ -12,6 +12,11 @@ export interface NotionConfig {
    * (time entries) sync as rows of this database; when unset, only todos sync.
    */
   timeLogDatabaseId?: string;
+  /**
+   * Name for a time-log row when the time entry has no description. Placeholders:
+   * {projectTitle}, {startDate}, {startTime}, {endDate}, {endTime}, {taskId}.
+   */
+  timeLogNameTemplate?: string;
   /** Optional property-name override for the todo status property. */
   statusProperty?: string;
   /** Optional property-name override for the todo due-date property. */

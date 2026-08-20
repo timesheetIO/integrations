@@ -36,6 +36,10 @@ const WEBHOOK_SECRET_STATE_KEY = 'notion:webhook-secret';
 // the TTL (not released on success) so duplicate deliveries stay suppressed
 // until the new mapping is visible everywhere.
 const IMPORT_LOCK_TTL_SECONDS = 60 * 60;
+/** How long a resolved database schema is trusted before it is read again. */
+const DATABASE_PROPS_TTL_SECONDS = 15 * 60;
+/** Name for a time-log row when the time entry carries no description. */
+const DEFAULT_TIME_LOG_NAME_TEMPLATE = '{projectTitle} {startDate} {startTime}-{endTime}';
 
 const TODO_STATUS_OPEN = 0;
 const TODO_STATUS_CLOSED = 1;
@@ -95,9 +99,13 @@ export async function loadUserMappingIndex(
 }
 
 let sharedClient: NotionClient | null = null;
+// The sync-change payload carries only a project id, so the title has to be read
+// once per project and reused across the changes in a batch.
+let projectTitleCache: Map<string, string> | null = null;
 
 export function resetSharedClient(): void {
   sharedClient = null;
+  projectTitleCache = null;
 }
 
 export function createNotionClient(context: IntegrationContext<NotionConfig>): NotionClient {
@@ -208,7 +216,10 @@ export async function resolveDatabaseProps(
     resolved.relationName = relationEntry[0];
   }
 
-  await context.state.set(cacheKey, resolved);
+  // Bounded, not permanent: people add the Date, Number and Relation properties
+  // after connecting, and a permanent cache would keep writing against the schema
+  // as it looked at setup time with nothing to explain why.
+  await context.state.set(cacheKey, resolved, { ttlSeconds: DATABASE_PROPS_TTL_SECONDS });
   return resolved;
 }
 
@@ -400,7 +411,9 @@ export async function syncTaskToNotion(
     todoPageId = todoMapping?.externalId ?? undefined;
   }
 
-  const properties = buildTimeLogPageProperties(task, start, end, props, todoPageId);
+  const projectTitle = await resolveProjectTitle(context, task);
+  const properties = buildTimeLogPageProperties(
+    task, start, end, props, todoPageId, context.config?.timeLogNameTemplate, projectTitle);
 
   let external: NotionPage;
   if (taskMapping?.externalId) {
@@ -898,14 +911,94 @@ function buildTodoPageProperties(todo: ToDoDto, props: ResolvedDatabaseProps): R
   return properties;
 }
 
+/**
+ * The Timesheet project's title. The sync-change payload carries only the id, so a
+ * batch triggered by an event has no title until it is read back.
+ */
+async function resolveProjectTitle(
+  context: IntegrationContext<NotionConfig>,
+  task: TaskDto
+): Promise<string> {
+  const direct = task.project?.title?.trim();
+  if (direct) {
+    return direct;
+  }
+  const projectId = task.project?.id;
+  if (!projectId) {
+    return '';
+  }
+  if (!projectTitleCache) {
+    projectTitleCache = new Map();
+  }
+  const cached = projectTitleCache.get(projectId);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  let title = '';
+  try {
+    const project = await context.data.getProject(projectId);
+    title = project?.title?.trim() ?? '';
+  } catch (err) {
+    context.logger.warn('Failed to read the project title for a time-log name', {
+      projectId,
+      error: String(err)
+    });
+  }
+  projectTitleCache.set(projectId, title);
+  return title;
+}
+
+/** A time entry's own description wins; otherwise the configurable template names it. */
+function buildTimeLogName(
+  task: TaskDto,
+  start: Date,
+  end: Date,
+  template: string | undefined,
+  projectTitle: string
+): string {
+  const description = task.description?.trim();
+  if (description) {
+    return description;
+  }
+
+  const replacements: Record<string, string> = {
+    description: '',
+    projectTitle,
+    taskId: task.id ?? '',
+    startDate: toIsoDate(start),
+    startTime: toIsoTime(start),
+    endDate: toIsoDate(end),
+    endTime: toIsoTime(end)
+  };
+
+  const rendered = (template || DEFAULT_TIME_LOG_NAME_TEMPLATE)
+    .replace(/\{(\w+)\}/g, (match, key: string) => (key in replacements ? replacements[key] : match))
+    // An unmapped placeholder leaves a gap; collapse so the name never reads ragged.
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return rendered || `Time entry ${toIsoDate(start)}`;
+}
+
+function toIsoDate(value: Date): string {
+  return value.toISOString().slice(0, 10);
+}
+
+function toIsoTime(value: Date): string {
+  return value.toISOString().slice(11, 16);
+}
+
 function buildTimeLogPageProperties(
   task: TaskDto,
   start: Date,
   end: Date,
   props: ResolvedDatabaseProps,
-  todoPageId: string | undefined
+  todoPageId: string | undefined,
+  template: string | undefined,
+  projectTitle: string
 ): Record<string, unknown> {
-  const title = task.description?.trim() || `Time entry ${start.toISOString().slice(0, 10)}`;
+  const title = buildTimeLogName(task, start, end, template, projectTitle);
 
   const properties: Record<string, unknown> = {
     [props.titleName]: { title: [{ type: 'text', text: { content: title } }] }
