@@ -41,11 +41,23 @@ const STATUS_COLUMN_ID = 'status';
 const MAX_CONSECUTIVE_BACKFILL_FAILURES = 5;
 const TIMESHEET_START_COLUMN_TITLE = 'Timesheet Start';
 const TIMESHEET_END_COLUMN_TITLE = 'Timesheet End';
+/**
+ * A people column on the subitems board. monday's My Work only lists a subitem when
+ * a person is assigned on the subitem itself; being assigned on the parent item does
+ * not carry down, so without this the entries exist but nobody sees them in My Work.
+ */
+const TIMESHEET_PERSON_COLUMN_TITLE = 'Timesheet User';
+/** monday's ColumnType for the Subitems column. */
+const SUBITEMS_COLUMN_TYPE = 'subtasks';
 
 const DEFAULT_ITEM_NAME_TEMPLATE = 'Timesheet entry {startDate} {startTime}–{endTime}';
 
 function boardColumnsCacheKey(boardId: string): string {
   return `monday:columns:${boardId}`;
+}
+
+function subitemsColumnCacheKey(boardId: string): string {
+  return `monday:subitems-column:${boardId}`;
 }
 
 export interface MondaySyncResult {
@@ -230,14 +242,14 @@ export async function syncTaskToMonday(
     } catch (err) {
       if (String(err).toLowerCase().includes('not found')) {
         external = parentItemId
-          ? await createSubitemWithColumns(client, context, parentItemId, name, task, externalUserId)
+          ? await createSubitemWithColumns(client, context, parentItemId, name, task, externalUserId, projectBoardId)
           : await createItemWithColumns(client, context, projectBoardId, name, task, externalUserId);
       } else {
         throw err;
       }
     }
   } else if (parentItemId) {
-    external = await createSubitemWithColumns(client, context, parentItemId, name, task, externalUserId);
+    external = await createSubitemWithColumns(client, context, parentItemId, name, task, externalUserId, projectBoardId);
   } else {
     external = await createItemWithColumns(client, context, projectBoardId, name, task, externalUserId);
   }
@@ -1170,8 +1182,12 @@ async function createSubitemWithColumns(
   parentItemId: string,
   name: string,
   task: TaskDto,
-  externalUserId: string | undefined
+  externalUserId: string | undefined,
+  parentBoardId?: string
 ): Promise<MondayItem> {
+  if (parentBoardId) {
+    await ensureSubitemsColumn(context, client, parentBoardId);
+  }
   const created = await client.createSubitem(parentItemId, name, {});
   const subitemBoardId = created.board?.id;
   if (!subitemBoardId) {
@@ -1281,6 +1297,35 @@ function extractDateRange(external: MondayItem, cols: MondayBoardColumns): { sta
   return null;
 }
 
+/**
+ * Makes sure the parent board carries a Subitems column.
+ *
+ * create_subitem succeeds on a board without one, and the subitem is real enough to
+ * appear in the activity log, but the board has no place to display it, so the entries
+ * are invisible on the item. Adding the column is what surfaces them.
+ */
+async function ensureSubitemsColumn(
+  context: IntegrationContext<MondayConfig>,
+  client: MondayClient,
+  boardId: string
+): Promise<void> {
+  const cacheKey = subitemsColumnCacheKey(boardId);
+  if (await context.state.get<boolean>(cacheKey)) {
+    return;
+  }
+  try {
+    const columns = await client.listBoardColumns(boardId);
+    if (!columns.some((column) => column.type === SUBITEMS_COLUMN_TYPE)) {
+      await client.createColumn(boardId, 'Subitems', SUBITEMS_COLUMN_TYPE);
+      context.logger.info('Created the Subitems column so time entries are visible on the item', { boardId });
+    }
+    await context.state.set(cacheKey, true);
+  } catch (err) {
+    // Never block the write: a missing column hides the entry, losing it is worse.
+    context.logger.warn('Failed to ensure the Subitems column', { boardId, error: String(err) });
+  }
+}
+
 async function ensureBoardColumns(
   context: IntegrationContext<MondayConfig>,
   client: MondayClient,
@@ -1301,7 +1346,18 @@ async function ensureBoardColumns(
   }
 
   const dateColumns = columns.filter((c) => c.type === 'date');
-  const peopleColumns = columns.filter((c) => c.type === 'people' || c.type === 'multiple-person');
+  let peopleColumns = columns.filter((c) => c.type === 'people' || c.type === 'multiple-person');
+
+  if (peopleColumns.length === 0) {
+    // Without a people column here nothing can be assigned, and monday's My Work
+    // lists a subitem only when the person sits on the subitem itself.
+    try {
+      const created = await client.createColumn(boardId, TIMESHEET_PERSON_COLUMN_TITLE, 'people');
+      peopleColumns = [created];
+    } catch (err) {
+      context.logger.warn('Failed to create Timesheet User column', { boardId, error: String(err) });
+    }
+  }
 
   const byTitle = (title: string) => dateColumns.find((c) => (c.title ?? '').trim().toLowerCase() === title.toLowerCase());
 

@@ -6,6 +6,7 @@ import { runFullSync as clickupFullSync } from '../clickup/src/handlers/runFullS
 import { resetSharedClient as resetClickUp } from '../clickup/src/lib/taskSync';
 import { listExternalProjects as mondayListProjects } from '../monday/src/handlers/listExternalProjects';
 import { runFullSync as mondayFullSync } from '../monday/src/handlers/runFullSync';
+import { syncTaskToExternal as mondaySyncTask } from '../monday/src/handlers/syncTaskToExternal';
 import { resetSharedClient as resetMonday } from '../monday/src/lib/taskSync';
 import { runFullSync as notionFullSync } from '../notion/src/handlers/runFullSync';
 import { resetSharedClient as resetNotion } from '../notion/src/lib/taskSync';
@@ -39,8 +40,9 @@ const installFetch = (route: (url: string, init?: RequestInit) => unknown | unde
 const mappings = (overrides: {
   list?: (entity: string) => MappingRecord[];
   findByExternal?: (entity: string, externalId: string) => MappingRecord | null;
+  get?: (entity: string) => MappingRecord | null;
 }) => ({
-  get: jest.fn().mockResolvedValue(null),
+  get: jest.fn(async (input: { entity: string }) => (overrides.get ? overrides.get(input.entity) : null)),
   findByExternal: jest.fn(async (input: { entity: string; externalId: string }) =>
     overrides.findByExternal ? overrides.findByExternal(input.entity, input.externalId) : null
   ),
@@ -85,6 +87,19 @@ const buildContext = (
     },
     logger: { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() }
   } as unknown as IntegrationContext);
+
+/** Minimal stopped time entry with both ends, which monday needs for its date columns. */
+const baseTaskShape = {
+  id: 'task-1',
+  user: 'user-1',
+  running: false,
+  deleted: false,
+  lastUpdate: 1_700_000_000_000,
+  description: 'Consulting',
+  startDateTime: '2026-02-20T10:00:00.000Z',
+  endDateTime: '2026-02-20T11:00:00.000Z',
+  project: { id: 'project-1' }
+};
 
 const projectMapping: MappingRecord = {
   localId: 'project-1',
@@ -385,5 +400,98 @@ describe('monday board picker', () => {
     // Mapping a project to a subitems board makes every todo-less time entry fail
     // with "Can't create an item on subitems board".
     expect(boards.map((b) => b.id)).toEqual(['100']);
+  });
+});
+
+describe('monday time entry visibility', () => {
+  const parentBoardId = 'external-project-1';
+
+  /**
+   * A subitem created on a board without the Subitems column is real (it shows in
+   * the activity log) but the board has nowhere to display it, and My Work only
+   * lists a subitem when a person sits on the subitem itself.
+   */
+  const routeBoards = (options: { parentColumns: unknown[]; subitemColumns: unknown[] }) => {
+    const created: string[] = [];
+    const route = (_url: string, init?: RequestInit) => {
+      const query = typeof init?.body === 'string' ? init.body : '';
+      if (query.includes('create_column')) {
+        const body = JSON.parse(query) as { variables?: { columnType?: string; boardId?: string } };
+        created.push(`${body.variables?.boardId}:${body.variables?.columnType}`);
+        return { data: { create_column: { id: 'new-col', title: 'x', type: body.variables?.columnType } } };
+      }
+      if (query.includes('create_subitem')) {
+        return {
+          data: {
+            create_subitem: {
+              id: 'sub-1',
+              name: 'Consulting',
+              board: { id: 'subboard-1' },
+              parent_item: { id: 'external-todo-1', board: { id: parentBoardId } }
+            }
+          }
+        };
+      }
+      if (query.includes('columns')) {
+        const body = JSON.parse(query) as { variables?: { boardIds?: string[] } };
+        const isParent = body.variables?.boardIds?.[0] === parentBoardId;
+        return { data: { boards: [{ columns: isParent ? options.parentColumns : options.subitemColumns }] } };
+      }
+      return { data: { change_multiple_column_values: { id: 'sub-1', board: { id: 'subboard-1' } } } };
+    };
+    return { route, created };
+  };
+
+  // Cast once: the fixture is intentionally partial, the plugin reads a handful of fields.
+  const taskWithTodo = { ...baseTaskShape, todo: { id: 'todo-1' } } as unknown as Record<string, unknown>;
+
+  it('adds the Subitems column and a people column so entries are visible and reach My Work', async () => {
+    const { route, created } = routeBoards({ parentColumns: [], subitemColumns: [] });
+    installFetch(route);
+
+    await mondaySyncTask(
+      { taskId: 'task-1', item: taskWithTodo } as never,
+      buildContext(
+        {},
+        mappings({
+          list: (entity) => (entity === 'project' ? [projectMapping] : []),
+          findByExternal: () => null,
+          // The subitem path needs the todo's monday item as its parent.
+          get: (entity) => (entity === 'todo' ? todoMapping : entity === 'project' ? projectMapping : null)
+        }),
+        { getTask: jest.fn().mockResolvedValue(taskWithTodo) }
+      )
+    );
+
+    expect(created).toContain(`${parentBoardId}:subtasks`);
+    expect(created.some((c) => c.endsWith(':people'))).toBe(true);
+  });
+
+  it('does not add columns that already exist', async () => {
+    const { route, created } = routeBoards({
+      parentColumns: [{ id: 'sub', title: 'Subitems', type: 'subtasks' }],
+      subitemColumns: [
+        { id: 'start', title: 'Timesheet Start', type: 'date' },
+        { id: 'end', title: 'Timesheet End', type: 'date' },
+        { id: 'p', title: 'Owner', type: 'people' }
+      ]
+    });
+    installFetch(route);
+
+    await mondaySyncTask(
+      { taskId: 'task-1', item: taskWithTodo } as never,
+      buildContext(
+        {},
+        mappings({
+          list: (entity) => (entity === 'project' ? [projectMapping] : []),
+          findByExternal: () => null,
+          // The subitem path needs the todo's monday item as its parent.
+          get: (entity) => (entity === 'todo' ? todoMapping : entity === 'project' ? projectMapping : null)
+        }),
+        { getTask: jest.fn().mockResolvedValue(taskWithTodo) }
+      )
+    );
+
+    expect(created).toEqual([]);
   });
 });

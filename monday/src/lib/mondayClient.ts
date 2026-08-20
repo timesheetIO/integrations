@@ -246,7 +246,7 @@ export class MondayClient {
   async createColumn(
     boardId: string,
     title: string,
-    columnType: 'date' | 'people' | 'timeline' | 'text' | 'status'
+    columnType: 'date' | 'people' | 'timeline' | 'text' | 'status' | 'subtasks'
   ): Promise<MondayColumn> {
     const data = await this.graphql<{ create_column?: MondayColumn }>(
       `mutation ($boardId: ID!, $title: String!, $columnType: ColumnType!) {

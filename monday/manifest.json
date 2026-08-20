@@ -1,7 +1,7 @@
 {
   "id": "monday-sync",
   "name": "monday.com Sync",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "description": "Synchronize Timesheet tasks and todos with monday.com",
   "longDescription": "Bidirectional synchronization between Timesheet and monday.com. Timesheet ToDos are mirrored as monday.com items inside the mapped board, and Timesheet time entries are pushed as subitems of the corresponding item (or as a standalone item on the board when no ToDo is linked).",
   "icon": "monday",
