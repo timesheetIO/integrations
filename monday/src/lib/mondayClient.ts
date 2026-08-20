@@ -27,6 +27,8 @@ interface GraphQLResponse<T> {
 }
 
 const ITEMS_PAGE_LIMIT = 100;
+/** monday's board `type` for the hidden board that holds a board's subitems. */
+const SUBITEMS_BOARD_TYPE = 'sub_items_board';
 
 export class MondayClient {
   private static readonly API_URL = 'https://api.monday.com/v2';
@@ -59,6 +61,7 @@ export class MondayClient {
             id
             name
             state
+            type
             workspace { id name }
           }
         }`,
@@ -68,7 +71,10 @@ export class MondayClient {
       if (boards.length === 0) {
         break;
       }
-      collected.push(...boards);
+      // A subitems board is returned by this query like any other, but monday
+      // refuses create_item on it ("Please use create_subitem mutation"), so
+      // mapping a project to one breaks every time entry that has no todo.
+      collected.push(...boards.filter((board) => board.type !== SUBITEMS_BOARD_TYPE));
       if (boards.length < ITEMS_PAGE_LIMIT) {
         break;
       }

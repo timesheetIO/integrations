@@ -4,6 +4,7 @@ import { handleWebhook as asanaWebhook } from '../asana/src/handlers/handleWebho
 import { resetSharedClient as resetAsana } from '../asana/src/lib/taskSync';
 import { runFullSync as clickupFullSync } from '../clickup/src/handlers/runFullSync';
 import { resetSharedClient as resetClickUp } from '../clickup/src/lib/taskSync';
+import { listExternalProjects as mondayListProjects } from '../monday/src/handlers/listExternalProjects';
 import { runFullSync as mondayFullSync } from '../monday/src/handlers/runFullSync';
 import { resetSharedClient as resetMonday } from '../monday/src/lib/taskSync';
 import { runFullSync as notionFullSync } from '../notion/src/handlers/runFullSync';
@@ -356,5 +357,33 @@ describe('clickup carries assignees into imported todos', () => {
     );
 
     expect(createTodo).toHaveBeenCalledWith(expect.not.objectContaining({ assignedUsers: expect.anything() }));
+  });
+});
+
+describe('monday board picker', () => {
+  it('hides subitems boards, which reject create_item', async () => {
+    installFetch((_url, init) => {
+      const query = typeof init?.body === 'string' ? init.body : '';
+      if (query.includes('boards(')) {
+        return {
+          data: {
+            boards: [
+              { id: '100', name: 'Client work', state: 'active', type: 'board' },
+              { id: '101', name: 'Subitems of Client work', state: 'active', type: 'sub_items_board' }
+            ]
+          }
+        };
+      }
+      return { data: {} };
+    });
+
+    const boards = await mondayListProjects(
+      undefined,
+      buildContext({}, mappings({}), {})
+    );
+
+    // Mapping a project to a subitems board makes every todo-less time entry fail
+    // with "Can't create an item on subitems board".
+    expect(boards.map((b) => b.id)).toEqual(['100']);
   });
 });

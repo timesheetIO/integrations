@@ -37,6 +37,8 @@ const STATUS_COLUMN_ID = 'status';
 
 // Titles used when the plugin has to create its own date columns. monday.com
 // generates random ids for new columns, but the title is what users see.
+/** Consecutive outbound failures that end a project's backfill instead of running to timeout. */
+const MAX_CONSECUTIVE_BACKFILL_FAILURES = 5;
 const TIMESHEET_START_COLUMN_TITLE = 'Timesheet Start';
 const TIMESHEET_END_COLUMN_TITLE = 'Timesheet End';
 
@@ -467,6 +469,10 @@ export async function runMondayFullSync(
 
     for (const projectMapping of projectMappings) {
       if (!projectMapping.externalId) continue;
+      // A misconfiguration such as a board that rejects every write fails once per
+      // task, so without a ceiling the run only ever ends in PLUGIN_TIMEOUT and
+      // retries identically forever. Stop early and report instead.
+      let consecutiveFailures = 0;
       try {
         for await (const task of iterateLocalTasks(context, projectMapping.localId)) {
           if (task.deleted || task.running) continue;
@@ -478,9 +484,19 @@ export async function runMondayFullSync(
               caches
             );
             if (result.status === 'synced' || result.status === 'deleted') outboundCount += 1;
+            consecutiveFailures = 0;
           } catch (err) {
             errors.push({ direction: 'outbound', entityType: TASK_ENTITY, entityId: task.id, error: String(err) });
             context.logger.warn('Outbound task backfill failed', { taskId: task.id, error: String(err) });
+            consecutiveFailures += 1;
+            if (consecutiveFailures >= MAX_CONSECUTIVE_BACKFILL_FAILURES) {
+              context.logger.error('Aborting outbound task backfill after repeated failures', {
+                projectId: projectMapping.localId,
+                failures: consecutiveFailures,
+                lastError: String(err)
+              });
+              break;
+            }
           }
         }
       } catch (err) {

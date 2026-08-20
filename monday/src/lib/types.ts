@@ -27,6 +27,8 @@ export interface MondayBoard {
   id: string;
   name: string;
   state?: string;
+  /** `board`, `sub_items_board`, `custom_object` or `document`. */
+  type?: string;
   workspace?: { id?: string | null; name?: string | null } | null;
 }
 
