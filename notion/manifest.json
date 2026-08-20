@@ -1,7 +1,7 @@
 {
   "id": "notion-sync",
   "name": "Notion Sync",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Synchronize Timesheet todos and time entries with Notion databases",
   "longDescription": "Bidirectional synchronization between Timesheet and Notion. Timesheet todos are mirrored 1:1 with pages in the mapped Notion database, and Timesheet time entries (tasks) sync as rows of an optional time-log database, related to the todo's page. Changes made in Notion flow back through webhooks and scheduled syncs.",
   "icon": "notion",
@@ -25,7 +25,9 @@
       "oauth": {
         "authorizeUrl": "https://api.notion.com/v1/oauth/authorize",
         "tokenUrl": "https://api.notion.com/v1/oauth/token",
-        "scopes": []
+        "scopes": [],
+        "tokenAuthStyle": "basic",
+        "tokenRequestFormat": "json"
       }
     }
   ],
