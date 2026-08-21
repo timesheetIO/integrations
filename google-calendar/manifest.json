@@ -1,7 +1,7 @@
 {
   "id": "google-calendar-sync",
   "name": "Google Calendar Sync",
-  "version": "1.4.12",
+  "version": "1.4.13",
   "description": "Synchronize Timesheet tasks with Google Calendar",
   "longDescription": "Bidirectional synchronization between Timesheet tasks and Google Calendar events.",
   "icon": "google-calendar",
@@ -116,6 +116,16 @@
       "actionId": "handle-sync-batch"
     },
     {
+      "id": "watch-renewal",
+      "type": "schedule",
+      "name": "Watch Channel Renewal",
+      "description": "Keep the Google Calendar push channels alive so inbound changes keep arriving",
+      "schedule": "0 3 * * *",
+      "timezone": "UTC",
+      "configurable": false,
+      "actionId": "renew-watch-channels"
+    },
+    {
       "id": "manual-sync",
       "type": "user_action",
       "name": "Manual Sync",
@@ -153,6 +163,12 @@
       "id": "run-full-sync",
       "name": "Run full sync",
       "handler": "runFullSync"
+    },
+    {
+      "id": "renew-watch-channels",
+      "name": "Renew watch channels",
+      "handler": "renewWatchChannels",
+      "internal": true
     },
     {
       "id": "test-connection",

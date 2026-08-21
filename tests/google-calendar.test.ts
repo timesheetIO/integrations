@@ -1,5 +1,6 @@
 import { IntegrationContext, TaskDto } from '@timesheet/integration-sdk';
 import { runFullSync } from '../google-calendar/src/handlers/runFullSync';
+import { renewWatchChannels } from '../google-calendar/src/handlers/renewWatchChannels';
 import { syncTaskToExternal } from '../google-calendar/src/handlers/syncTaskToExternal';
 import { handleGoogleWebhook } from '../google-calendar/src/lib/taskSync';
 
@@ -1314,5 +1315,119 @@ describe('google-calendar plugin', () => {
     expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
       metadata: expect.objectContaining({ origin: 'google' })
     }));
+  });
+
+  it('renews a watch channel that expires inside the renewal window without syncing events', async () => {
+    const upsert = jest.fn();
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 'new-channel', resourceId: 'resource-new', expiration: '9999999999999' }),
+      text: async () => ''
+    });
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock as unknown as typeof fetch;
+
+    const context = {
+      userId: 'user-1',
+      installationId: 'installation-1',
+      config: {},
+      metadata: { webhooks: { 'integration-webhook': 'https://worker.timesheet.io/hooks/integration/abc' } },
+      data: {
+        createTask: jest.fn(),
+        getTask: jest.fn(),
+        updateTask: jest.fn(),
+        deleteTask: jest.fn()
+      },
+      credentials: {
+        getAccessToken: jest.fn().mockResolvedValue('token'),
+        refreshToken: jest.fn().mockResolvedValue('token-2')
+      },
+      mappings: {
+        list: jest.fn().mockResolvedValue([
+          {
+            localId: 'project-1',
+            externalId: 'calendar-1',
+            syncStatus: 'SYNCED',
+            metadata: {
+              watchChannelId: 'old-channel',
+              watchResourceId: 'resource-old',
+              watchExpiration: String(Date.now() + 24 * 60 * 60 * 1000)
+            }
+          }
+        ]),
+        findByExternal: jest.fn(),
+        upsert,
+        get: jest.fn(),
+        delete: jest.fn()
+      },
+      state: { get: jest.fn(), set: jest.fn(), delete: jest.fn() },
+      logger: { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() }
+    } as unknown as IntegrationContext;
+
+    const result = await renewWatchChannels(undefined, context);
+
+    expect(result.status).toBe('completed');
+    const calledUrls = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(calledUrls).toContain('https://www.googleapis.com/calendar/v3/channels/stop');
+    expect(calledUrls.some((url) => url.includes('/calendars/calendar-1/events/watch'))).toBe(true);
+    // The renewal must not list or import events — that is the expensive path.
+    expect(calledUrls.some((url) => /\/events(\?|$)/.test(url))).toBe(false);
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({
+        watchChannelId: expect.stringMatching(/^ts-/),
+        watchResourceId: 'resource-new',
+        watchExpiration: '9999999999999'
+      })
+    }));
+    expect(upsert.mock.calls[0][0].metadata.watchChannelId).not.toBe('old-channel');
+  });
+
+  it('leaves a watch channel alone while it has more than the renewal window left', async () => {
+    const upsert = jest.fn();
+    const fetchMock = jest.fn();
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock as unknown as typeof fetch;
+
+    const context = {
+      userId: 'user-1',
+      installationId: 'installation-1',
+      config: {},
+      metadata: { webhooks: { 'integration-webhook': 'https://worker.timesheet.io/hooks/integration/abc' } },
+      data: {
+        createTask: jest.fn(),
+        getTask: jest.fn(),
+        updateTask: jest.fn(),
+        deleteTask: jest.fn()
+      },
+      credentials: {
+        getAccessToken: jest.fn().mockResolvedValue('token'),
+        refreshToken: jest.fn().mockResolvedValue('token-2')
+      },
+      mappings: {
+        list: jest.fn().mockResolvedValue([
+          {
+            localId: 'project-1',
+            externalId: 'calendar-1',
+            syncStatus: 'SYNCED',
+            metadata: {
+              watchChannelId: 'active-channel',
+              watchResourceId: 'resource-active',
+              watchExpiration: String(Date.now() + 6 * 24 * 60 * 60 * 1000)
+            }
+          }
+        ]),
+        findByExternal: jest.fn(),
+        upsert,
+        get: jest.fn(),
+        delete: jest.fn()
+      },
+      state: { get: jest.fn(), set: jest.fn(), delete: jest.fn() },
+      logger: { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() }
+    } as unknown as IntegrationContext;
+
+    const result = await renewWatchChannels(undefined, context);
+
+    expect(result.status).toBe('completed');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(upsert).not.toHaveBeenCalled();
   });
 });
