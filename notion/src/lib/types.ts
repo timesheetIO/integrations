@@ -59,6 +59,8 @@ export interface NotionDatabase {
   id: string;
   archived?: boolean;
   title?: NotionRichText[];
+  /** Where the database lives. Creating a sibling needs a `page_id` parent. */
+  parent?: { type?: string; page_id?: string; workspace?: boolean };
   properties?: Record<string, NotionPropertySchema>;
 }
 

@@ -148,6 +148,26 @@ export class NotionClient {
     }
   }
 
+  /**
+   * Creates a database as a child of a page. Notion refuses the workspace root as a
+   * parent, so callers have to supply a real page.
+   */
+  async createDatabase(
+    parentPageId: string,
+    title: string,
+    properties: Record<string, unknown>
+  ): Promise<NotionDatabase> {
+    const response = await this.request<NotionDatabase>('POST', '/v1/databases', undefined, {
+      parent: { type: 'page_id', page_id: parentPageId },
+      title: [{ type: 'text', text: { content: title } }],
+      properties
+    });
+    if (!response?.id) {
+      throw new Error('Notion createDatabase returned no database id.');
+    }
+    return response;
+  }
+
   async createPage(databaseId: string, properties: Record<string, unknown>): Promise<NotionPage> {
     const response = await this.request<NotionPage>('POST', '/v1/pages', undefined, {
       parent: { database_id: databaseId },

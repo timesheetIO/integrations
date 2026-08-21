@@ -9,6 +9,7 @@ import { runFullSync as mondayFullSync } from '../monday/src/handlers/runFullSyn
 import { syncTaskToExternal as mondaySyncTask } from '../monday/src/handlers/syncTaskToExternal';
 import { resetSharedClient as resetMonday } from '../monday/src/lib/taskSync';
 import { runFullSync as notionFullSync } from '../notion/src/handlers/runFullSync';
+import { createTimeLogDatabase as notionCreateTimeLogDb } from '../notion/src/handlers/createTimeLogDatabase';
 import { syncTaskToExternal as notionSyncTask } from '../notion/src/handlers/syncTaskToExternal';
 import { resetSharedClient as resetNotion } from '../notion/src/lib/taskSync';
 
@@ -558,5 +559,75 @@ describe('notion time-log naming', () => {
     await notionSyncTask({ taskId: 'task-1', item: taskWithoutDescription } as never, context);
 
     expect(getProject).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('notion time-log database creation', () => {
+  const todoDatabaseId = 'todo-db';
+
+  const routeCreate = (parent: Record<string, unknown>, captured: Record<string, unknown>[]) =>
+    (url: string, init?: RequestInit) => {
+      if (url.endsWith('/v1/databases') && init?.method === 'POST') {
+        captured.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+        return { id: 'new-time-log-db' };
+      }
+      if (url.includes(`/v1/databases/${todoDatabaseId}`)) {
+        return { id: todoDatabaseId, parent, properties: { Name: { type: 'title' } } };
+      }
+      return {};
+    };
+
+  const contextWithProject = (state: Record<string, unknown> = {}) =>
+    buildContext(
+      {},
+      mappings({ list: (entity) => (entity === 'project' ? [{ localId: 'project-1', externalId: todoDatabaseId, syncStatus: 'SYNCED' }] : []) }),
+      {},
+      state
+    );
+
+  it('creates the database beside the mapped one, with only the properties it writes', async () => {
+    const captured: Record<string, unknown>[] = [];
+    installFetch(routeCreate({ type: 'page_id', page_id: 'parent-page' }, captured));
+    const context = contextWithProject();
+
+    const result = await notionCreateTimeLogDb(undefined, context);
+
+    expect(result.details?.databaseId).toBe('new-time-log-db');
+    const body = captured[0];
+    expect(body.parent).toEqual({ type: 'page_id', page_id: 'parent-page' });
+    // Only what the sync fills: unused columns are what made the manual setup confusing.
+    expect(Object.keys(body.properties as object)).toEqual(['Description', 'Time range', 'Net hours', 'Project']);
+    expect((body.properties as Record<string, { relation?: { database_id?: string } }>).Project.relation?.database_id)
+      .toBe(todoDatabaseId);
+    // Plugins cannot write their own config, so the id is remembered in state.
+    expect(context.state.set).toHaveBeenCalledWith('notion:time-log-database-id', 'new-time-log-db');
+  });
+
+  it('refuses when the mapped database sits at the workspace root', async () => {
+    const captured: Record<string, unknown>[] = [];
+    installFetch(routeCreate({ type: 'workspace', workspace: true }, captured));
+
+    const result = await notionCreateTimeLogDb(undefined, contextWithProject());
+
+    // Notion has no page to parent the new database to.
+    expect(result.details?.reason).toBe('no-parent-page');
+    expect(captured).toHaveLength(0);
+  });
+
+  it('does not create a second one when a database is already configured', async () => {
+    const captured: Record<string, unknown>[] = [];
+    installFetch(routeCreate({ type: 'page_id', page_id: 'parent-page' }, captured));
+
+    const result = await notionCreateTimeLogDb(
+      undefined,
+      buildContext(
+        { timeLogDatabaseId: 'existing-db' },
+        mappings({ list: () => [] }),
+        {}
+      )
+    );
+
+    expect(result.details?.reason).toBe('time-log-database-already-set');
+    expect(captured).toHaveLength(0);
   });
 });

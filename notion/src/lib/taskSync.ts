@@ -38,6 +38,9 @@ const WEBHOOK_SECRET_STATE_KEY = 'notion:webhook-secret';
 const IMPORT_LOCK_TTL_SECONDS = 60 * 60;
 /** How long a resolved database schema is trusted before it is read again. */
 const DATABASE_PROPS_TTL_SECONDS = 15 * 60;
+/** Where a time-log database created by the plugin is remembered. */
+const TIME_LOG_DB_STATE_KEY = 'notion:time-log-database-id';
+const TIME_LOG_DB_TITLE = 'Timesheet Time Entries';
 /** Name for a time-log row when the time entry carries no description. */
 const DEFAULT_TIME_LOG_NAME_TEMPLATE = '{projectTitle} {startDate} {startTime}-{endTime}';
 
@@ -345,7 +348,7 @@ export async function syncTaskToNotion(
     return skip({ reason: 'sync-direction-mismatch' });
   }
 
-  const timeLogDatabaseId = context.config?.timeLogDatabaseId;
+  const timeLogDatabaseId = await resolveTimeLogDatabaseId(context);
   if (!timeLogDatabaseId) {
     return skip({ reason: 'time-log-database-not-configured' });
   }
@@ -455,6 +458,78 @@ export async function syncTaskToNotion(
   };
 }
 
+
+/**
+ * The time-log database: the configured id wins, otherwise one this plugin created
+ * for the installation. Plugins cannot write their own config, so a database made by
+ * the "Create time-log database" action is remembered in state instead.
+ */
+export async function resolveTimeLogDatabaseId(
+  context: IntegrationContext<NotionConfig>
+): Promise<string | undefined> {
+  const configured = context.config?.timeLogDatabaseId?.trim();
+  if (configured) {
+    return configured;
+  }
+  try {
+    const stored = await context.state.get<string>(TIME_LOG_DB_STATE_KEY);
+    return stored?.trim() || undefined;
+  } catch (err) {
+    context.logger.warn('Failed to read the stored time-log database id', { error: String(err) });
+    return undefined;
+  }
+}
+
+/**
+ * Builds the time-log database next to the mapped project database, with exactly the
+ * properties this plugin writes and nothing else. Creating unused columns is what
+ * makes a hand-built table confusing: empty fields that look broken but never fill.
+ */
+export async function createTimeLogDatabase(
+  context: IntegrationContext<NotionConfig>
+): Promise<NotionSyncResult> {
+  const existing = await resolveTimeLogDatabaseId(context);
+  if (existing) {
+    return skip({ reason: 'time-log-database-already-set', databaseId: existing });
+  }
+
+  const projectMappings = await context.mappings.list({ system: SYSTEM, entity: PROJECT_ENTITY });
+  const todoDatabaseId = projectMappings.find((mapping) => !!mapping.externalId)?.externalId;
+  if (!todoDatabaseId) {
+    return skip({ reason: 'missing-project-mappings' });
+  }
+
+  const client = getOrCreateClient(context);
+  const todoDatabase = await client.getDatabase(todoDatabaseId);
+  const parentPageId = todoDatabase?.parent?.type === 'page_id' ? todoDatabase.parent.page_id : undefined;
+  if (!parentPageId) {
+    // Notion refuses to create a database at the workspace root, so a mapped database
+    // sitting there leaves nowhere to put its sibling.
+    return skip({ reason: 'no-parent-page', databaseId: todoDatabaseId });
+  }
+
+  const created = await client.createDatabase(parentPageId, TIME_LOG_DB_TITLE, {
+    Description: { title: {} },
+    'Time range': { date: {} },
+    'Net hours': { number: { format: 'number' } },
+    Project: { relation: { database_id: todoDatabaseId, single_property: {} } }
+  });
+
+  await context.state.set(TIME_LOG_DB_STATE_KEY, created.id);
+  context.logger.info('Created the Notion time-log database', {
+    databaseId: created.id,
+    parentPageId,
+    relatedDatabaseId: todoDatabaseId
+  });
+
+  return {
+    system: SYSTEM,
+    status: 'completed',
+    syncedCount: 0,
+    details: { databaseId: created.id, parentPageId, title: TIME_LOG_DB_TITLE }
+  };
+}
+
 // ============================================================================
 // Inbound: Notion  →  Timesheet (full sync + webhook handler)
 // ============================================================================
@@ -498,7 +573,7 @@ export async function runNotionFullSync(
   }
 
   // Time-log database (v2): pull inbound edits to time entries as well.
-  const timeLogDatabaseId = context.config?.timeLogDatabaseId;
+  const timeLogDatabaseId = await resolveTimeLogDatabaseId(context);
   if (timeLogDatabaseId) {
     const props = await resolveDatabaseProps(context, client, timeLogDatabaseId);
     if (props) {
@@ -613,7 +688,7 @@ async function syncPageInbound(
   }
 
   const parentDatabaseId = page.parent?.database_id;
-  const timeLogDatabaseId = context.config?.timeLogDatabaseId;
+  const timeLogDatabaseId = await resolveTimeLogDatabaseId(context);
 
   if (timeLogDatabaseId && parentDatabaseId && normalizeId(parentDatabaseId) === normalizeId(timeLogDatabaseId)) {
     const props = await resolveDatabaseProps(context, client, timeLogDatabaseId);
