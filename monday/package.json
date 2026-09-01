@@ -1,6 +1,15 @@
 {
   "name": "@timesheet/plugin-monday",
   "version": "1.5.2",
+  "description": "Synchronize Timesheet tasks and todos with monday.com",
+  "homepage": "https://timesheet.io/en/integrations",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/timesheetIO/integrations.git",
+    "directory": "monday"
+  },
+  "license": "MIT",
+  "author": "timesheet.io <support@timesheet.io>",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [

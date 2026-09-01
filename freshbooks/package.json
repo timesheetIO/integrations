@@ -1,6 +1,15 @@
 {
   "name": "@timesheet/plugin-freshbooks",
   "version": "1.0.0",
+  "description": "Synchronize time entries with FreshBooks",
+  "homepage": "https://timesheet.io/en/integrations",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/timesheetIO/integrations.git",
+    "directory": "freshbooks"
+  },
+  "license": "MIT",
+  "author": "timesheet.io <support@timesheet.io>",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
