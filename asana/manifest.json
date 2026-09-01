@@ -1,7 +1,7 @@
 {
   "id": "asana-sync",
   "name": "Asana Sync",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Synchronize Timesheet todos and time entries with Asana",
   "longDescription": "Bidirectional synchronization between Timesheet and Asana. Timesheet todos are mirrored 1:1 with Asana tasks in the mapped project, and Timesheet time entries (tasks) attached to a todo are logged as Asana time-tracking entries on the corresponding Asana task. Changes made in Asana flow back through webhooks and scheduled syncs.",
   "icon": "asana",

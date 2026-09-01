@@ -1,7 +1,7 @@
 {
   "id": "basecamp-sync",
   "name": "Basecamp Sync",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Synchronize Timesheet todos and time entries with Basecamp",
   "longDescription": "Bidirectional synchronization between Timesheet and Basecamp. Timesheet todos are mirrored 1:1 with Basecamp to-dos in the mapped project, and Timesheet time entries attached to a todo are logged as Basecamp timesheet entries on the corresponding to-do. Changes made in Basecamp flow back through project webhooks and scheduled syncs. Writing time into Basecamp needs the paid Timesheets add-on on the Basecamp project; without it, to-do sync keeps working and time entries stay in Timesheet only.",
   "icon": "basecamp",

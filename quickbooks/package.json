@@ -1,6 +1,6 @@
 {
   "name": "@timesheet/plugin-quickbooks",
-  "version": "1.5.3",
+  "version": "1.5.4",
   "description": "Synchronize tasks with QuickBooks Online",
   "homepage": "https://timesheet.io/en/integrations/quickbooks",
   "repository": {

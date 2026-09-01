@@ -1,6 +1,6 @@
 {
   "name": "@timesheet/plugin-outlook-calendar",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Sync Timesheet with Outlook Calendar. Scaffold, not yet functional.",
   "homepage": "https://timesheet.io/en/integrations",
   "repository": {

@@ -1,7 +1,7 @@
 {
   "id": "freshbooks-sync",
   "name": "FreshBooks Sync",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Synchronize time entries with FreshBooks",
   "longDescription": "Bidirectional synchronization between Timesheet tasks and FreshBooks time entries. Timesheet projects map to FreshBooks projects and Timesheet users map to FreshBooks team members, so logged time lands on the right project and teammate in FreshBooks for billing.",
   "icon": "freshbooks",

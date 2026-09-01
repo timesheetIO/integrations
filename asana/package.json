@@ -1,6 +1,6 @@
 {
   "name": "@timesheet/plugin-asana",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Synchronize Timesheet todos and time entries with Asana",
   "homepage": "https://timesheet.io/en/integrations",
   "repository": {

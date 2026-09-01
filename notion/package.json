@@ -1,6 +1,6 @@
 {
   "name": "@timesheet/plugin-notion",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "Synchronize Timesheet todos and time entries with Notion databases",
   "homepage": "https://timesheet.io/en/integrations",
   "repository": {

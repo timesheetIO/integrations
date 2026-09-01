@@ -1,6 +1,6 @@
 {
   "name": "@timesheet/plugin-monday",
-  "version": "1.5.2",
+  "version": "1.5.3",
   "description": "Synchronize Timesheet tasks and todos with monday.com",
   "homepage": "https://timesheet.io/en/integrations",
   "repository": {
