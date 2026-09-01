@@ -1,0 +1,123 @@
+Integration admin form values (Plugin Integration)
+Generated 2026-08-31 from integrations/<plugin>/manifest.json + package.json and the npm registry.
+
+Field order follows the admin form: Integration Type, Name, Slug, Version, Category, Tags,
+Beschreibung, Bild, Icon URL, NPM Package Source, Package Version, Package Integrity.
+
+Manifest, external auth config and data access are resolved from the npm package, so only the
+values below have to be typed.
+
+
+================================================================================
+BASECAMP
+================================================================================
+
+Integration Type
+Plugin Integration
+
+Name
+Basecamp Sync
+
+Slug
+basecamp-sync
+
+Version
+1.1.0
+
+Category
+project-management
+
+Tags
+sync,timesheet,basecamp,project-management
+
+Beschreibung
+Bidirectional synchronization between Timesheet and Basecamp. Timesheet todos are mirrored 1:1 with Basecamp to-dos in the mapped project, and Timesheet time entries attached to a todo are logged as Basecamp timesheet entries on the corresponding to-do. Changes made in Basecamp flow back through project webhooks and scheduled syncs. Writing time into Basecamp needs the paid Timesheets add-on on the Basecamp project; without it, to-do sync keeps working and time entries stay in Timesheet only.
+
+Bild
+https://timesheet.io/img/integrations/basecamp-light.png
+
+Icon URL
+https://timesheet.io/img/integrations/icons/basecamp.png
+
+NPM Package Source
+@timesheet/plugin-basecamp
+
+Package Version
+1.1.0
+
+Package Integrity
+sha512-+3A2rCsVOcqUl7TcGngEIIllvskyuMsmXb9NECAbwsn38/rwmaFjAhiggieYx4TuvmxUSo59bVnqkt6349GtQA==
+
+
+================================================================================
+FRESHBOOKS
+================================================================================
+
+Integration Type
+Plugin Integration
+
+Name
+FreshBooks Sync
+
+Slug
+freshbooks-sync
+
+Version
+1.0.0
+
+Category
+accounting
+
+Tags
+sync,timesheet,freshbooks,time-tracking
+
+Beschreibung
+Bidirectional synchronization between Timesheet tasks and FreshBooks time entries. Timesheet projects map to FreshBooks projects and Timesheet users map to FreshBooks team members, so logged time lands on the right project and teammate in FreshBooks for billing.
+
+Bild
+(leave empty)
+
+Icon URL
+https://timesheet.io/img/integrations/icons/freshbooks.png
+
+NPM Package Source
+@timesheet/plugin-freshbooks
+
+Package Version
+1.0.0
+
+Package Integrity
+sha512-/zJzqKMM770H/yQrotPH5iYm2piiVvNvIad1q/XWv43q6G4wxe8LQn5tAIRySGAuCO2teXlfzm5sUMWEyf34Rg==
+
+
+================================================================================
+NOTES
+================================================================================
+
+Beschreibung
+  The value above is the manifest longDescription. It is the single description field: the
+  marketplace card shows it as plain text, the integration detail page renders it as markdown.
+  Short alternatives, straight from the manifest description field, if the card should stay short:
+    Basecamp:   Synchronize Timesheet todos and time entries with Basecamp
+    FreshBooks: Synchronize time entries with FreshBooks
+
+Bild vs Icon URL
+  iconUrl wins wherever both exist (marketplace grid, integration show page). image is only used
+  on the integration details panel, capped at 180x45, so it wants a wide logo, not a square icon.
+  basecamp-light.png is 500x117 and verified live (HTTP 200).
+  There is no freshbooks-light.png on timesheet.io (HTTP 404) and none in landing/public, so Bild
+  stays empty until a wide FreshBooks logo is added there.
+
+Package Integrity
+  Both values are npm subresource integrity (sha512, base64), copied from the registry
+  dist.integrity of that exact version. This is the format the runtime requires:
+  PluginExecutor rejects anything not starting with "sha512-", and PackageLoader recomputes the
+  sha512 of the downloaded tarball and refuses to run on a mismatch.
+  Raw sha256 of the same tarballs, for reference only, not accepted by the form:
+    basecamp    866502d6bad411af3859d021e6120ee7250e9b4c692ccabd17e6f9667cfc7ead
+    freshbooks  a987aec11437f08a43e0a940d251b5783abab0745ceb5a3f780919e47dd1ac42
+
+installScope (further down the form, not shown above)
+  Basecamp 1.1.0 is the version that added per-member attribution, so basecamp-sync is the
+  candidate to flip from PROFILE_ONLY to BOTH. FreshBooks also attributes inbound time correctly.
+  Both are still PROFILE_ONLY unless someone has flipped them since.
