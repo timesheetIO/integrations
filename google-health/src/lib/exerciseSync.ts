@@ -73,47 +73,35 @@ export async function syncExercises(context: IntegrationContext<GoogleHealthConf
   let skippedNoMapping = 0;
   const errors: Array<{ exerciseId: string; error: string }> = [];
 
-  try {
-    for await (const exercise of client.iterateExercises({ startTimeAfter: sinceTime })) {
-      try {
-        const result = await importExercise(context, exercise, {
-          projectByExerciseType,
-          fallbackProjectId,
-          syncTagId
-        });
-        switch (result) {
-          case 'imported':
-            imported += 1;
-            break;
-          case 'skipped-already-synced':
-            skippedAlreadySynced += 1;
-            break;
-          case 'skipped-no-mapping':
-            skippedNoMapping += 1;
-            break;
-        }
-      } catch (err) {
-        context.logger.error('Failed to import exercise', {
-          exerciseId: exercise.id,
-          error: String(err)
-        });
-        errors.push({ exerciseId: exercise.id, error: String(err) });
+  // A failure to reach Google Health at all (credential missing or lapsed, provider
+  // down) propagates: the runtime records the execution as failed, the backend counts
+  // it towards the failure breaker and notifies the user. Swallowing it here reported
+  // those runs as successes, so a never-connected install retried silently every hour.
+  for await (const exercise of client.iterateExercises({ startTimeAfter: sinceTime })) {
+    try {
+      const result = await importExercise(context, exercise, {
+        projectByExerciseType,
+        fallbackProjectId,
+        syncTagId
+      });
+      switch (result) {
+        case 'imported':
+          imported += 1;
+          break;
+        case 'skipped-already-synced':
+          skippedAlreadySynced += 1;
+          break;
+        case 'skipped-no-mapping':
+          skippedNoMapping += 1;
+          break;
       }
+    } catch (err) {
+      context.logger.error('Failed to import exercise', {
+        exerciseId: exercise.id,
+        error: String(err)
+      });
+      errors.push({ exerciseId: exercise.id, error: String(err) });
     }
-  } catch (err) {
-    context.logger.error('Google Health sync failed before completion', { error: String(err) });
-    return {
-      system: PLUGIN_SYSTEM,
-      status: 'failed',
-      syncedCount: imported,
-      details: {
-        imported,
-        skippedAlreadySynced,
-        skippedNoMapping,
-        sinceTime,
-        errors: [...errors, { exerciseId: '*', error: String(err) }]
-      }
-    };
   }
 
   // Advance the cursor only when every fetched workout was handled; a partial

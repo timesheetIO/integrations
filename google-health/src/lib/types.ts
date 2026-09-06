@@ -53,7 +53,7 @@ export interface ListExercisesPage {
 
 export interface SyncResult {
   system: string;
-  status: 'completed' | 'partial' | 'failed';
+  status: 'completed' | 'partial';
   syncedCount: number;
   details?: {
     imported?: number;
