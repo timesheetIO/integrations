@@ -4,7 +4,12 @@ import { labelForExerciseType } from './exerciseTypes';
 import { GoogleHealthConfig, GoogleHealthExercise, SyncResult } from './types';
 
 export const PLUGIN_SYSTEM = 'google-health';
-export const EXERCISE_TYPE_ENTITY = 'exercise_type';
+/**
+ * Exercise type mappings are stored under the `project` entity: the web mapping UI
+ * keys every project mapping on the local entity type, as all other plugins read it.
+ * localId = Timesheet project id, externalId = exercise type key (e.g. "RUNNING").
+ */
+export const PROJECT_ENTITY = 'project';
 export const WORKOUT_ENTITY = 'workout';
 
 const LOOKBACK_DAYS_DEFAULT = 7;
@@ -51,7 +56,7 @@ export async function syncExercises(context: IntegrationContext<GoogleHealthConf
 
   const exerciseTypeMappings = await context.mappings.list({
     system: PLUGIN_SYSTEM,
-    entity: EXERCISE_TYPE_ENTITY
+    entity: PROJECT_ENTITY
   });
   const projectByExerciseType = new Map<string, string>();
   for (const mapping of exerciseTypeMappings) {

@@ -72,7 +72,7 @@ const createContext = (options: ContextOptions = {}) => {
           : null
       ),
       list: jest.fn().mockImplementation(async (input: { entity: string }) =>
-        input.entity === 'exercise_type' ? options.exerciseTypeMappings ?? [] : []
+        input.entity === 'project' ? options.exerciseTypeMappings ?? [] : []
       ),
       upsert,
       delete: mappingDelete
