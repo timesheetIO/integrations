@@ -1,0 +1,377 @@
+{
+  "id": "bmd",
+  "name": "BMD NTCS Export",
+  "version": "1.0.0",
+  "description": "Ausgangsrechnungen und Lohndaten als Importdateien für BMD NTCS",
+  "longDescription": "Erzeugt den FIBU-Buchungsimport für Ausgangsrechnungen und den Lohnimport (Normalstunden, Überstunden, Abwesenheiten, Taggeld und Nächtigungsgeld) als Dateien, die der Steuerberater direkt in BMD NTCS einliest. Nur für Organisationen mit Business-Plan.",
+  "icon": "bmd",
+  "category": "accounting",
+  "tags": [
+    "accounting",
+    "payroll",
+    "bmd",
+    "ntcs",
+    "austria",
+    "export"
+  ],
+  "dataAccess": [
+    "documents",
+    "absences",
+    "overtime",
+    "tasks",
+    "expenses",
+    "colleagues"
+  ],
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "firmennummer": {
+        "type": "string",
+        "title": "Firmennummer",
+        "description": "Firmennummer des Mandanten in BMD NTCS. Steht in jeder Zeile des Lohnimports.",
+        "x-ui-placeholder": "z. B. 1"
+      },
+      "mandantennummer": {
+        "type": "string",
+        "title": "Mandantennummer",
+        "description": "Mandantennummer beim Steuerberater, nur zur Information.",
+        "x-ui-placeholder": "z. B. 10023"
+      },
+      "buchungssymbol": {
+        "type": "string",
+        "title": "Buchungssymbol",
+        "description": "Buchungssymbol für Ausgangsrechnungen im FIBU-Import.",
+        "default": "AR"
+      },
+      "erloeskonto20": {
+        "type": "string",
+        "title": "Erlöskonto 20 %",
+        "default": "4000"
+      },
+      "erloeskonto10": {
+        "type": "string",
+        "title": "Erlöskonto 10 %",
+        "default": "4001"
+      },
+      "erloeskonto13": {
+        "type": "string",
+        "title": "Erlöskonto 13 %",
+        "default": "4002"
+      },
+      "erloeskontoSteuerfrei": {
+        "type": "string",
+        "title": "Erlöskonto steuerfrei",
+        "default": "4010"
+      },
+      "erloeskontoReverseCharge": {
+        "type": "string",
+        "title": "Erlöskonto Reverse Charge",
+        "default": "4020"
+      },
+      "steuercode20": {
+        "type": "string",
+        "title": "Steuercode 20 %",
+        "description": "BMD Steuercode für den Normalsteuersatz. Bitte mit dem Steuerberater abstimmen.",
+        "default": "1"
+      },
+      "steuercode10": {
+        "type": "string",
+        "title": "Steuercode 10 %",
+        "default": "2"
+      },
+      "steuercode13": {
+        "type": "string",
+        "title": "Steuercode 13 %",
+        "default": "3"
+      },
+      "steuercodeSteuerfrei": {
+        "type": "string",
+        "title": "Steuercode steuerfrei",
+        "default": "9"
+      },
+      "steuercodeReverseCharge": {
+        "type": "string",
+        "title": "Steuercode Reverse Charge",
+        "default": "22"
+      },
+      "debitorStandard": {
+        "type": "string",
+        "title": "Debitorenkonto Standard",
+        "description": "Wird verwendet, wenn ein Kunde keinem Debitorenkonto zugeordnet ist.",
+        "default": "20000"
+      },
+      "gutschriftModus": {
+        "type": "string",
+        "title": "Gutschriften",
+        "description": "buchcode: Buchcode 2 mit positivem Betrag. negativ: Buchcode 1 mit negativem Betrag.",
+        "enum": ["buchcode", "negativ"],
+        "default": "buchcode"
+      },
+      "kostenstelle": {
+        "type": "string",
+        "title": "Kostenstelle Standard",
+        "description": "Kostenstelle, wenn die Rechnung keine eigene trägt. Leer lassen, wenn nicht verwendet."
+      },
+      "filiale": {
+        "type": "string",
+        "title": "Filiale",
+        "description": "Filialnummer für den FIBU-Import. Leer lassen, wenn nicht verwendet."
+      },
+      "charset": {
+        "type": "string",
+        "title": "Zeichensatz",
+        "enum": ["windows-1252", "iso-8859-1", "utf-8"],
+        "default": "windows-1252"
+      },
+      "separator": {
+        "type": "string",
+        "title": "Feldtrenner",
+        "enum": [";", ",", "tab", "|"],
+        "default": ";"
+      },
+      "decimalMark": {
+        "type": "string",
+        "title": "Dezimaltrennzeichen",
+        "enum": [",", "."],
+        "default": ","
+      },
+      "dateFormat": {
+        "type": "string",
+        "title": "Datumsformat",
+        "enum": ["DD.MM.YYYY", "DDMMYYYY", "YYYYMMDD", "YYYY-MM-DD"],
+        "default": "DD.MM.YYYY"
+      },
+      "headerRow": {
+        "type": "boolean",
+        "title": "Kopfzeile mit Feldnamen",
+        "default": true
+      },
+      "quoteText": {
+        "type": "boolean",
+        "title": "Textfelder in Anführungszeichen",
+        "default": false
+      },
+      "taggeldKeyword": {
+        "type": "string",
+        "title": "Stichwort Taggeld",
+        "description": "Ausgaben, deren Beschreibung dieses Wort enthält, werden als Taggeld exportiert. Leer lassen, um Taggeld zu überspringen.",
+        "x-ui-placeholder": "Taggeld"
+      },
+      "naechtigungsgeldKeyword": {
+        "type": "string",
+        "title": "Stichwort Nächtigungsgeld",
+        "description": "Ausgaben, deren Beschreibung dieses Wort enthält, werden als Nächtigungsgeld exportiert. Leer lassen, um es zu überspringen.",
+        "x-ui-placeholder": "Nächtigung"
+      },
+      "monthlyFibu": {
+        "type": "boolean",
+        "title": "Monatlich FIBU-Import erzeugen",
+        "default": true
+      },
+      "monthlyLohn": {
+        "type": "boolean",
+        "title": "Monatlich Lohnimport erzeugen",
+        "default": true
+      }
+    },
+    "required": ["firmennummer"],
+    "x-ui-groups": [
+      { "title": "Mandant", "fields": ["firmennummer", "mandantennummer"] },
+      { "title": "FIBU", "fields": ["buchungssymbol", "erloeskonto20", "erloeskonto10", "erloeskonto13", "erloeskontoSteuerfrei", "erloeskontoReverseCharge", "steuercode20", "steuercode10", "steuercode13", "steuercodeSteuerfrei", "steuercodeReverseCharge", "debitorStandard", "gutschriftModus", "kostenstelle", "filiale"] },
+      { "title": "Lohn", "fields": ["taggeldKeyword", "naechtigungsgeldKeyword"] },
+      { "title": "Dateiformat", "fields": ["charset", "separator", "decimalMark", "dateFormat", "headerRow", "quoteText"] },
+      { "title": "Monatlicher Lauf", "fields": ["monthlyFibu", "monthlyLohn"] }
+    ]
+  },
+  "mappingSchema": {
+    "system": "bmd",
+    "mappings": [
+      {
+        "id": "employees",
+        "title": "Dienstverhältnisnummern",
+        "description": "Ordnen Sie jedem Mitarbeiter die Dienstverhältnisnummer (oder Personalnummer) aus BMD Lohn zu. Ohne Zuordnung wird die Personalnummer aus dem Timesheet-Profil verwendet.",
+        "localEntity": {
+          "type": "user",
+          "label": "Mitarbeiter",
+          "display": "{{displayName}}"
+        },
+        "externalEntity": {
+          "type": "dienstverhaeltnisnummer",
+          "label": "Dienstverhältnisnummer"
+        },
+        "required": false
+      },
+      {
+        "id": "wage-types",
+        "title": "Lohnarten für Abwesenheiten",
+        "description": "Ordnen Sie jeder Abwesenheitsart (Urlaub, Krankenstand, Pflegefreistellung) die BMD Lohnart zu.",
+        "localEntity": {
+          "type": "absence_type",
+          "label": "Abwesenheitsart",
+          "fetchAction": "list-absence-types"
+        },
+        "externalEntity": {
+          "type": "lohnart",
+          "label": "BMD Lohnart"
+        },
+        "required": false
+      },
+      {
+        "id": "surcharge-types",
+        "title": "Lohnarten für Zeiten und Zuschläge",
+        "description": "Ordnen Sie Normalstunden, Überstunden 50 und 100, Nacht-, Sonntags- und Feiertagsarbeit, Taggeld und Nächtigungsgeld die BMD Lohnart zu. Nicht zugeordnete Arten werden übersprungen und gemeldet.",
+        "localEntity": {
+          "type": "surcharge_type",
+          "label": "Zeit- oder Zuschlagsart",
+          "fetchAction": "list-surcharge-types"
+        },
+        "externalEntity": {
+          "type": "lohnart",
+          "label": "BMD Lohnart"
+        },
+        "required": false
+      },
+      {
+        "id": "debtors",
+        "title": "Debitorenkonten",
+        "description": "Ordnen Sie Ihren Kunden das Debitorenkonto aus BMD FIBU zu. Die Liste stammt aus Ihren Rechnungen. Nicht zugeordnete Kunden landen auf dem Standardkonto und werden gemeldet.",
+        "localEntity": {
+          "type": "customer",
+          "label": "Kunde",
+          "fetchAction": "list-customers"
+        },
+        "externalEntity": {
+          "type": "debitorenkonto",
+          "label": "Debitorenkonto"
+        },
+        "required": false
+      }
+    ]
+  },
+  "triggers": [
+    {
+      "id": "export-fibu",
+      "type": "user_action",
+      "name": "FIBU-Import erzeugen",
+      "description": "Buchungsimport für die Ausgangsrechnungen eines Zeitraums",
+      "userAction": {
+        "label": "FIBU-Import erzeugen",
+        "placement": "page"
+      },
+      "actionId": "build-fibu"
+    },
+    {
+      "id": "export-lohn",
+      "type": "user_action",
+      "name": "Lohnimport erzeugen",
+      "description": "Lohnimport für die Mitarbeiter eines Zeitraums",
+      "userAction": {
+        "label": "Lohnimport erzeugen",
+        "placement": "page"
+      },
+      "actionId": "build-lohn"
+    },
+    {
+      "id": "monthly",
+      "type": "schedule",
+      "name": "Monatlicher Export",
+      "description": "Erzeugt am 1. jedes Monats die Dateien für den Vormonat",
+      "schedule": "0 6 1 * *",
+      "timezone": "Europe/Vienna",
+      "catchUpPolicy": "run_once",
+      "configurable": true,
+      "actionId": "build-monthly"
+    }
+  ],
+  "actions": [
+    {
+      "id": "build-fibu",
+      "name": "FIBU-Import erzeugen",
+      "handler": "buildFibu",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": { "type": "string", "title": "Von", "description": "Erster Tag des Zeitraums (JJJJ-MM-TT)", "x-ui-placeholder": "2026-08-01" },
+          "to": { "type": "string", "title": "Bis", "description": "Letzter Tag des Zeitraums (JJJJ-MM-TT)", "x-ui-placeholder": "2026-08-31" }
+        },
+        "required": ["from", "to"]
+      }
+    },
+    {
+      "id": "build-lohn",
+      "name": "Lohnimport erzeugen",
+      "handler": "buildLohn",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": { "type": "string", "title": "Von", "description": "Erster Tag des Zeitraums (JJJJ-MM-TT)", "x-ui-placeholder": "2026-08-01" },
+          "to": { "type": "string", "title": "Bis", "description": "Letzter Tag des Zeitraums (JJJJ-MM-TT)", "x-ui-placeholder": "2026-08-31" }
+        },
+        "required": ["from", "to"]
+      }
+    },
+    {
+      "id": "build-monthly",
+      "handler": "buildMonthly",
+      "internal": true
+    },
+    {
+      "id": "list-customers",
+      "handler": "listCustomers",
+      "internal": true
+    },
+    {
+      "id": "list-absence-types",
+      "handler": "listAbsenceTypes",
+      "internal": true
+    },
+    {
+      "id": "list-surcharge-types",
+      "handler": "listSurchargeTypes",
+      "internal": true
+    },
+    {
+      "id": "list-history",
+      "handler": "listHistory",
+      "internal": true
+    }
+  ],
+  "pages": [
+    {
+      "id": "export",
+      "title": "BMD Export",
+      "icon": "file-export",
+      "layout": "form",
+      "widgets": [
+        {
+          "id": "fibu",
+          "type": "action_button",
+          "title": "FIBU-Import (Ausgangsrechnungen)",
+          "description": "Eine Buchungszeile je Rechnung und Steuersatz. Belege außerhalb des Zeitraums brechen den Lauf ab.",
+          "config": {
+            "actionId": "build-fibu",
+            "label": "FIBU-Import erzeugen",
+            "variant": "primary"
+          }
+        },
+        {
+          "id": "lohn",
+          "type": "action_button",
+          "title": "Lohnimport (Mitarbeiter)",
+          "description": "Normalstunden, Überstunden, Abwesenheiten, Taggeld und Nächtigungsgeld je Mitarbeiter.",
+          "config": {
+            "actionId": "build-lohn",
+            "label": "Lohnimport erzeugen",
+            "variant": "primary"
+          }
+        },
+        {
+          "id": "history",
+          "type": "table",
+          "title": "Bisherige Exporte",
+          "dataSource": "list-history"
+        }
+      ]
+    }
+  ]
+}

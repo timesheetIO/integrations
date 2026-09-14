@@ -1,0 +1,31 @@
+{
+  "name": "@timesheet/plugin-bmd",
+  "version": "1.0.0",
+  "description": "Export invoices and payroll data for BMD NTCS",
+  "homepage": "https://timesheet.io/en/integrations/bmd",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/timesheetIO/integrations.git",
+    "directory": "bmd"
+  },
+  "license": "MIT",
+  "author": "timesheet.io <support@timesheet.io>",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "manifest.json"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@timesheet/integration-sdk": "^0.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "typescript": "^5.9.3"
+  }
+}
