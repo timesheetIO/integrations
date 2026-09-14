@@ -122,6 +122,14 @@ const createContext = (): IntegrationContext<{ syncDirection: string }> => ({
     set: async () => {},
     delete: async () => {}
   },
+  files: {
+    write: async input => ({
+      url: `https://files.example/${input.filename}`,
+      filename: input.filename,
+      contentType: input.contentType,
+      bytes: 0
+    })
+  },
   logger: {
     debug: () => {},
     info: () => {},
