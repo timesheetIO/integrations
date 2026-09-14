@@ -121,3 +121,97 @@ installScope (further down the form, not shown above)
   Basecamp 1.1.0 is the version that added per-member attribution, so basecamp-sync is the
   candidate to flip from PROFILE_ONLY to BOTH. FreshBooks also attributes inbound time correctly.
   Both are still PROFILE_ONLY unless someone has flipped them since.
+
+
+================================================================================
+BMD
+================================================================================
+
+Integration Type
+Plugin Integration
+
+Name
+BMD NTCS Export
+
+Slug
+bmd-ntcs-export
+
+Version
+1.0.0
+
+Category
+accounting
+
+Tags
+accounting,payroll,bmd,ntcs,austria,export
+
+Beschreibung
+Exports outgoing invoices as a BMD NTCS FIBU booking import file and worked time, overtime, absences and travel allowances as a BMD NTCS payroll import file. Debtor accounts, employee numbers and wage types are mapped in Timesheet and typed in from the tax advisor. Exports run on demand for any period from the integration page and automatically for the previous month. Organization installs only; the organization needs the Business plan. The exact NTCS column layout must be confirmed against the customer's import definition before release.
+
+Bild
+https://timesheet.io/img/integrations/bmd-light.png
+
+Icon URL
+https://timesheet.io/img/integrations/icons/bmd.png
+
+Install Scope
+ORGANIZATION_ONLY
+
+Minimum Plan
+business
+
+NPM Package Source
+@timesheet/plugin-bmd
+
+Package Version
+1.0.0
+
+Package Integrity
+(fill in from the npm registry after the first publish of @timesheet/plugin-bmd 1.0.0; the image and icon assets above must be added to landing/public/img/integrations first)
+
+
+================================================================================
+DATEV
+================================================================================
+
+Integration Type
+Plugin Integration
+
+Name
+DATEV Export
+
+Slug
+datev-export
+
+Version
+1.0.0
+
+Category
+accounting
+
+Tags
+datev,buchhaltung,lohn,export,accounting,payroll
+
+Beschreibung
+Exports outgoing invoices as a DATEV Buchungsstapel (EXTF, format version 700) and worked time, overtime and absences as DATEV Lohn und Gehalt or LODAS import files. Debtor accounts, Personalnummern and Lohnarten are mapped in Timesheet and typed in from the tax advisor; the file is handed to the Kanzlei for import. Exports run on demand for any period from the integration page and automatically for the previous month. Organization installs only; the organization needs the Business plan.
+
+Bild
+https://timesheet.io/img/integrations/datev-light.png
+
+Icon URL
+https://timesheet.io/img/integrations/icons/datev.png
+
+Install Scope
+ORGANIZATION_ONLY
+
+Minimum Plan
+business
+
+NPM Package Source
+@timesheet/plugin-datev
+
+Package Version
+1.0.0
+
+Package Integrity
+(fill in from the npm registry after the first publish of @timesheet/plugin-datev 1.0.0; the image and icon assets above must be added to landing/public/img/integrations first)

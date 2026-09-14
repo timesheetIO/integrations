@@ -8,7 +8,9 @@ This folder contains first-party plugin packages for the sandboxed plugin runtim
 | --- | --- | --- | --- |
 | [Asana](asana/README.md) | `@timesheet/plugin-asana` | project-management | Sync todos and time entries with Asana. |
 | [Basecamp](basecamp/README.md) | `@timesheet/plugin-basecamp` | project-management | Sync todos and time entries with Basecamp. |
+| [BMD](bmd/README.md) | `@timesheet/plugin-bmd` | accounting | Export invoices (NTCS FIBU) and payroll data (NTCS Lohn) as BMD import files, organization installs on the Business plan. |
 | [ClickUp](clickup/README.md) | `@timesheet/plugin-clickup` | project-management | Sync tasks and todos with ClickUp. |
+| [DATEV](datev/README.md) | `@timesheet/plugin-datev` | accounting | Export invoices (EXTF Buchungsstapel) and payroll data (Lohn und Gehalt, LODAS) as DATEV import files, organization installs on the Business plan. |
 | [FreshBooks](freshbooks/README.md) | `@timesheet/plugin-freshbooks` | accounting | Sync tasks with FreshBooks time entries. |
 | [Google Calendar](google-calendar/README.md) | `@timesheet/plugin-google-calendar` | calendar | Sync tasks with Google Calendar events. |
 | [Google Health](google-health/README.md) | `@timesheet/plugin-google-health` | wellness | Import Google Health workouts as time entries (read-only). |
