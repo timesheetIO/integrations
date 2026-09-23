@@ -1,7 +1,7 @@
 {
   "id": "datev",
   "name": "DATEV Export",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Buchungsstapel (EXTF) aus Rechnungen und Lohndaten (LODAS, Lohn und Gehalt) als DATEV-Dateien",
   "longDescription": "Erzeugt DATEV-Importdateien aus Timesheet: einen Buchungsstapel im DATEV-Format (EXTF) aus den Ausgangsrechnungen der Organisation und Lohndaten (Arbeitsstunden, Abwesenheiten, Überstunden) für DATEV LODAS oder DATEV Lohn und Gehalt. Die Dateien werden zum Download bereitgestellt und vom Steuerberater importiert. Nur für Organisationen im Business-Plan.",
   "icon": "datev",

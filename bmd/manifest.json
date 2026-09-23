@@ -1,7 +1,7 @@
 {
   "id": "bmd",
   "name": "BMD NTCS Export",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Ausgangsrechnungen und Lohndaten als Importdateien für BMD NTCS",
   "longDescription": "Erzeugt den FIBU-Buchungsimport für Ausgangsrechnungen und den Lohnimport (Normalstunden, Überstunden, Abwesenheiten, Taggeld und Nächtigungsgeld) als Dateien, die der Steuerberater direkt in BMD NTCS einliest. Nur für Organisationen mit Business-Plan.",
   "icon": "bmd",

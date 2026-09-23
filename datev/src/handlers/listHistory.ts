@@ -1,6 +1,7 @@
 import { defineHandler } from '@timesheet/integration-sdk';
 import { readHistory } from '../lib/common';
 import { DatevConfig } from '../lib/types';
+import { formatDate } from '../lib/writer';
 
 export interface HistoryRow {
   at: string;
@@ -33,7 +34,7 @@ export const listHistory = defineHandler<unknown, HistoryOutput, DatevConfig>(as
     items: history.map(run => ({
       at: run.at,
       surface: LABELS[run.surface] ?? run.surface,
-      period: `${run.period.from} bis ${run.period.to}`,
+      period: `${formatDate(run.period.from, 'DD.MM.YYYY')} bis ${formatDate(run.period.to, 'DD.MM.YYYY')}`,
       files: run.files.map(f => f.filename).join(', '),
       count: run.count,
       warnings: run.warnings

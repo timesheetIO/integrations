@@ -1,6 +1,6 @@
 {
   "name": "@timesheet/plugin-datev",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "DATEV export: Buchungsstapel (EXTF) for invoices, LODAS and Lohn und Gehalt files for payroll",
   "homepage": "https://docs.timesheet.io/integrations/datev/",
   "repository": {

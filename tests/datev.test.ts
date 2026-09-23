@@ -583,7 +583,7 @@ describe('datev monthly run, lists and history', () => {
     expect(history.items).toHaveLength(2);
     expect(history.items[0].surface).toBe('Lohndaten');
     expect(history.items[1].surface).toBe('Buchungsstapel');
-    expect(history.items[1].period).toBe(`${monthly.period.from} bis ${monthly.period.to}`);
+    expect(history.items[1].period).toBe(`${formatDate(monthly.period.from, 'DD.MM.YYYY')} bis ${formatDate(monthly.period.to, 'DD.MM.YYYY')}`);
     expect(history.columns.map(c => c.key)).toEqual(['at', 'surface', 'period', 'files', 'count', 'warnings']);
   });
 

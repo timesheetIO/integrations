@@ -235,7 +235,14 @@ describe('bmd plugin: FIBU Buchungsimport', () => {
 
     const history = await listHistory(undefined, harness.context);
     expect(history.items).toHaveLength(1);
-    expect(history.items[0]).toEqual(expect.objectContaining({ surface: 'fibu', count: 5, warningCount: 1, from: '2026-08-01', to: '2026-08-31' }));
+    expect(history.columns.map(c => c.label)).toEqual(['Datum', 'Art', 'Zeitraum', 'Dateien', 'Zeilen', 'Hinweise']);
+    expect(history.items[0]).toEqual(expect.objectContaining({
+      surface: 'FIBU-Import',
+      period: '01.08.2026 bis 31.08.2026',
+      files: 'BMD_FIBU_2026-08-01_2026-08-31.csv',
+      count: 5,
+      warnings: 1
+    }));
     expect(harness.calls.listDocuments[0]).toEqual(expect.objectContaining({ organizationId: 'org-1', category: 0, startDate: '2026-08-01', endDate: '2026-08-31' }));
   });
 
@@ -426,7 +433,7 @@ describe('bmd plugin: Lohn import', () => {
     expect(harness.calls.listOvertimeBalances[0]).toEqual(expect.objectContaining({ page: 0 }));
 
     const history = await listHistory(undefined, harness.context);
-    expect(history.items[0]).toEqual(expect.objectContaining({ surface: 'lohn', count: 9 }));
+    expect(history.items[0]).toEqual(expect.objectContaining({ surface: 'Lohnimport', count: 9 }));
   });
 
   it('skips expenses entirely when no keyword is configured', async () => {
