@@ -211,14 +211,14 @@ describe('datev writer', () => {
     expect(previousMonth(new Date(Date.UTC(2026, 0, 15)))).toEqual({ from: '2025-12-01', to: '2025-12-31' });
     expect(resolvePeriod({ from: '01.08.2026', to: '31.08.2026' })).toEqual({ from: '2026-08-01', to: '2026-08-31' });
     expect(resolvePeriod(undefined, new Date(Date.UTC(2026, 8, 14)))).toEqual({ from: '2026-08-01', to: '2026-08-31' });
-    expect(() => resolvePeriod({ from: '2026-09-01', to: '2026-08-31' })).toThrow('after');
+    expect(() => resolvePeriod({ from: '2026-09-01', to: '2026-08-31' })).toThrow('liegt nach');
   });
 
   it('guards the period', () => {
     const guard = new PeriodGuard('2026-08-01', '2026-08-31');
     expect(guard.contains('2026-08-31')).toBe(true);
     expect(guard.contains('2026-09-01')).toBe(false);
-    expect(() => guard.assert('2026-07-31', 'Beleg')).toThrow('outside the period');
+    expect(() => guard.assert('2026-07-31', 'Beleg')).toThrow('außerhalb des Zeitraums');
     expect(guard.clamp('2026-07-30', '2026-08-03')).toEqual({ start: '2026-08-01', end: '2026-08-03' });
     expect(guard.clamp('2026-09-01', '2026-09-02')).toBeNull();
   });
@@ -322,7 +322,7 @@ describe('datev buildBuchungsstapel', () => {
       '500,00',
       '"S"',
       '10002',
-      '8337',
+      '8336',
       '"ATU12345678"'
     ]);
     const unmapped = rows[5].split(';');
@@ -359,7 +359,7 @@ describe('datev buildBuchungsstapel', () => {
 
   it('rejects a document outside the declared period', async () => {
     const h = createHarness({ documents: [invoice({ invoiceId: 'RE-2026-099', date: '2026-09-01' })] });
-    await expect(buildBuchungsstapel({ from: '2026-08-01', to: '2026-08-31' }, h.context)).rejects.toThrow('outside the period');
+    await expect(buildBuchungsstapel({ from: '2026-08-01', to: '2026-08-31' }, h.context)).rejects.toThrow('außerhalb des Zeitraums');
     expect(h.written).toHaveLength(0);
   });
 
@@ -394,7 +394,7 @@ describe('datev buildBuchungsstapel', () => {
 
   it('requires an organization installation', async () => {
     const h = createHarness({ organizationId: null });
-    await expect(buildBuchungsstapel({ from: '2026-08-01', to: '2026-08-31' }, h.context)).rejects.toThrow('installed for an organization');
+    await expect(buildBuchungsstapel({ from: '2026-08-01', to: '2026-08-31' }, h.context)).rejects.toThrow('für eine Organisation installiert');
   });
 
   it('requires Beraternummer and Mandantennummer', async () => {
@@ -470,17 +470,17 @@ describe('datev buildPayroll', () => {
     expect(lines(h.written[0].bytes)).toEqual([
       'Mandant;Personalnummer;Abrechnungsmonat;Lohnart;Anzahl;Betrag;Kostenstelle;Bemerkung',
       '777;00001;08/2026;100;16,00;;;Arbeitsstunden',
-      '777;00001;08/2026;200;2,00;;;Ueberstunden',
+      '777;00001;08/2026;200;2,00;;;Überstunden',
       '777;00001;08/2026;300;5,00;;;Urlaub',
       '777;00002;08/2026;100;4,00;;;Arbeitsstunden'
     ]);
   });
 
   const expenses: ExpenseDto[] = [
-    { id: 'e1', user: 'u1', member: colleagues[0], amount: '26.40', refunded: false, deleted: false, lastUpdate: 0, created: 0, description: 'Taggeld Wien', dateTime: '2026-08-11T08:00:00.000Z' },
-    { id: 'e2', user: 'u1', member: colleagues[0], amount: '15.00', refunded: false, deleted: false, lastUpdate: 0, created: 0, description: 'Nächtigungsgeld Graz', dateTime: '2026-08-11T20:00:00.000Z' },
+    { id: 'e1', user: 'u1', member: colleagues[0], amount: '26.40', refunded: false, deleted: false, lastUpdate: 0, created: 0, description: 'Verpflegungsmehraufwand München', dateTime: '2026-08-11T08:00:00.000Z' },
+    { id: 'e2', user: 'u1', member: colleagues[0], amount: '15.00', refunded: false, deleted: false, lastUpdate: 0, created: 0, description: 'Übernachtung Hamburg', dateTime: '2026-08-11T20:00:00.000Z' },
     { id: 'e3', user: 'u1', member: colleagues[0], amount: '99.00', refunded: false, deleted: false, lastUpdate: 0, created: 0, description: 'Parkgebuehr', dateTime: '2026-08-12T08:00:00.000Z' },
-    { id: 'e4', user: 'u1', member: colleagues[0], amount: '10.00', refunded: false, deleted: false, lastUpdate: 0, created: 0, description: 'Taggeld Linz', dateTime: '2026-09-02T08:00:00.000Z' }
+    { id: 'e4', user: 'u1', member: colleagues[0], amount: '10.00', refunded: false, deleted: false, lastUpdate: 0, created: 0, description: 'Verpflegungspauschale Köln', dateTime: '2026-09-02T08:00:00.000Z' }
   ];
 
   it('exports travel allowances from expenses as amount lines', async () => {
@@ -488,7 +488,7 @@ describe('datev buildPayroll', () => {
       colleagues: [colleagues[0]],
       tasks: [tasks[0]],
       expenses,
-      config: { lohnartTaggeld: '500', lohnartNaechtigungsgeld: '501' }
+      config: { lohnartVerpflegung: '500', lohnartUebernachtung: '501' }
     });
     const result = await buildPayroll({ from: '2026-08-01', to: '2026-08-31' }, h.context);
     expect(h.context.data.listExpenses).toHaveBeenCalledWith(expect.objectContaining({ startDate: '2026-08-01', endDate: '2026-08-31' }));
@@ -506,28 +506,28 @@ describe('datev buildPayroll', () => {
       colleagues: [colleagues[0]],
       tasks: [tasks[0]],
       expenses,
-      config: { payrollTarget: 'LUG', lohnartTaggeld: '500', lohnartNaechtigungsgeld: '501' }
+      config: { payrollTarget: 'LUG', lohnartVerpflegung: '500', lohnartUebernachtung: '501' }
     });
     await buildPayroll({ from: '2026-08-01', to: '2026-08-31' }, lug.context);
     expect(lines(lug.written[0].bytes).slice(1)).toEqual([
       '12345;00001;08/2026;100;8,00;;;Arbeitsstunden',
-      '12345;00001;08/2026;500;;26,40;;Taggeld',
-      '12345;00001;08/2026;501;;15,00;;Nächtigungsgeld'
+      '12345;00001;08/2026;500;;26,40;;Verpflegungsmehraufwand',
+      '12345;00001;08/2026;501;;15,00;;Übernachtungskosten'
     ]);
   });
 
   it('warns when expenses match a keyword but no Lohnart is configured', async () => {
-    const h = createHarness({ colleagues: [colleagues[0]], tasks: [tasks[0]], expenses, config: { lohnartTaggeld: '500' } });
+    const h = createHarness({ colleagues: [colleagues[0]], tasks: [tasks[0]], expenses, config: { lohnartVerpflegung: '500' } });
     const result = await buildPayroll({ from: '2026-08-01', to: '2026-08-31' }, h.context);
     expect(result.warnings.map(w => w.code)).toEqual(['expense_lohnart_missing']);
-    expect(result.warnings[0].details).toMatchObject({ keyword: 'Nächtigungsgeld' });
+    expect(result.warnings[0].details).toMatchObject({ keyword: 'Übernachtung' });
     const bewegung = lines(h.written[1].bytes);
     expect(bewegung.filter(l => l.includes(';501;'))).toEqual([]);
     expect(bewegung.filter(l => l.includes(';500;'))).toEqual(['200;"00001";01.08.2026;500;26,40;3;;']);
   });
 
   it('skips expense keywords that are left empty', async () => {
-    const h = createHarness({ colleagues: [colleagues[0]], tasks: [tasks[0]], expenses, config: { taggeldKeyword: '', naechtigungsgeldKeyword: '' } });
+    const h = createHarness({ colleagues: [colleagues[0]], tasks: [tasks[0]], expenses, config: { verpflegungKeyword: '', uebernachtungKeyword: '' } });
     const result = await buildPayroll({ from: '2026-08-01', to: '2026-08-31' }, h.context);
     expect(h.context.data.listExpenses).not.toHaveBeenCalled();
     expect(result.warnings).toEqual([]);
@@ -544,6 +544,20 @@ describe('datev buildPayroll', () => {
     const bewegung = lines(h.written[1].bytes);
     expect(bewegung[bewegung.length - 1]).toBe('200;"00002";01.08.2026;400;3,00;2;;');
     expect(result.warnings.map(w => w.code)).toEqual(['absence_prorated']);
+  });
+
+  it('rejects a payroll period spanning more than one calendar month', async () => {
+    const h = createHarness({ colleagues, tasks, absences, absenceTypes, overtime, mappings });
+    await expect(buildPayroll({ from: '2026-08-01', to: '2026-09-30' }, h.context)).rejects.toThrow('innerhalb eines Kalendermonats');
+    expect(h.context.data.listTasks).not.toHaveBeenCalled();
+    expect(h.written).toHaveLength(0);
+  });
+
+  it('books a partial month on the first day of its Abrechnungsmonat', async () => {
+    const h = createHarness({ colleagues: [colleagues[0]], tasks: [task('u1', '2026-08-17', 28800)] });
+    await buildPayroll({ from: '2026-08-15', to: '2026-08-31' }, h.context);
+    const bewegung = lines(h.written[1].bytes);
+    expect(bewegung.slice(bewegung.indexOf('[Bewegungsdaten]') + 1)).toEqual(['200;"00001";01.08.2026;100;8,00;1;;']);
   });
 
   it('warns when no wage type for worked hours is configured', async () => {

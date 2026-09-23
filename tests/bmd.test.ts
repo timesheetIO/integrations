@@ -251,7 +251,7 @@ describe('bmd plugin: FIBU Buchungsimport', () => {
 
   it('rejects an invoice dated outside the period', async () => {
     const harness = createHarness({ documents: [invoice({ id: 'r-9', date: '2026-09-01' })] });
-    await expect(buildFibu(period, harness.context)).rejects.toThrow('outside the period');
+    await expect(buildFibu(period, harness.context)).rejects.toThrow('außerhalb des Zeitraums');
     expect(harness.writes).toHaveLength(0);
   });
 

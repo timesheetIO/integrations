@@ -27,9 +27,9 @@ export interface EmployeeFacts {
   lines: WageLine[];
 }
 
-export type AllowanceKey = 'taggeld' | 'naechtigungsgeld';
+export type AllowanceKey = 'verpflegung' | 'uebernachtung';
 
-export const ALLOWANCE_LABELS: Record<AllowanceKey, string> = { taggeld: 'Taggeld', naechtigungsgeld: 'Nächtigungsgeld' };
+export const ALLOWANCE_LABELS: Record<AllowanceKey, string> = { verpflegung: 'Verpflegungsmehraufwand', uebernachtung: 'Übernachtungskosten' };
 
 export interface PayrollFacts {
   employees: EmployeeFacts[];
@@ -195,8 +195,8 @@ export async function collectPayrollFacts(
   // Travel allowances from expenses: keyword match on the description, summed per employee.
   const allowancesByUser = new Map<string, EmployeeFacts['allowances']>();
   const allKeywords: Array<{ key: AllowanceKey; keyword: string; lohnart: string }> = [
-    { key: 'taggeld', keyword: config.taggeldKeyword, lohnart: config.lohnartTaggeld },
-    { key: 'naechtigungsgeld', keyword: config.naechtigungsgeldKeyword, lohnart: config.lohnartNaechtigungsgeld }
+    { key: 'verpflegung', keyword: config.verpflegungKeyword, lohnart: config.lohnartVerpflegung },
+    { key: 'uebernachtung', keyword: config.uebernachtungKeyword, lohnart: config.lohnartUebernachtung }
   ];
   const keywords = allKeywords.filter(k => k.keyword.trim() !== '');
   if (keywords.length > 0) {
@@ -216,7 +216,7 @@ export async function collectPayrollFacts(
       }
       if (sums.size === 0) continue;
       if (!lohnart) {
-        warnings.add('expense_lohnart_missing', 'Keine Lohnart fuer diese Reisekosten konfiguriert, Betraege wurden nicht uebergeben', {
+        warnings.add('expense_lohnart_missing', 'Keine Lohnart für diese Reisekosten konfiguriert, Beträge wurden nicht übergeben', {
           keyword,
           label: ALLOWANCE_LABELS[key]
         });
@@ -231,7 +231,7 @@ export async function collectPayrollFacts(
   }
 
   if (!config.lohnartArbeitsstunden && worked.size > 0) {
-    warnings.add('wage_type_hours_missing', 'Keine Lohnart fuer Arbeitsstunden konfiguriert, Arbeitsstunden wurden nicht uebergeben');
+    warnings.add('wage_type_hours_missing', 'Keine Lohnart für Arbeitsstunden konfiguriert, Arbeitsstunden wurden nicht übergeben');
   }
 
   const activeUids = new Set<string>([...worked.keys(), ...absencesByUser.keys(), ...overtime.keys(), ...allowancesByUser.keys()]);
@@ -274,7 +274,7 @@ export function buildWageLines(facts: EmployeeFacts, config: ResolvedConfig, wag
     lines.push({ lohnart: config.lohnartArbeitsstunden, value: minutesToHours(facts.workedMinutes), kind: 'hours', label: 'Arbeitsstunden' });
   }
   if (config.lohnartUeberstunden && facts.overtimeMinutes > 0) {
-    lines.push({ lohnart: config.lohnartUeberstunden, value: minutesToHours(facts.overtimeMinutes), kind: 'hours', label: 'Ueberstunden' });
+    lines.push({ lohnart: config.lohnartUeberstunden, value: minutesToHours(facts.overtimeMinutes), kind: 'hours', label: 'Überstunden' });
   }
   if (config.lohnartMinderstunden && facts.undertimeMinutes > 0) {
     lines.push({ lohnart: config.lohnartMinderstunden, value: minutesToHours(facts.undertimeMinutes), kind: 'hours', label: 'Minderstunden' });
@@ -299,7 +299,7 @@ export function buildWageLines(facts: EmployeeFacts, config: ResolvedConfig, wag
       label: entry.label
     });
   }
-  const allowanceLohnart: Record<AllowanceKey, string> = { taggeld: config.lohnartTaggeld, naechtigungsgeld: config.lohnartNaechtigungsgeld };
+  const allowanceLohnart: Record<AllowanceKey, string> = { verpflegung: config.lohnartVerpflegung, uebernachtung: config.lohnartUebernachtung };
   for (const allowance of facts.allowances) {
     const lohnart = allowanceLohnart[allowance.key];
     if (!lohnart || allowance.amount === '0.00') continue;

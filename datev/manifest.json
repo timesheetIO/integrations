@@ -3,7 +3,7 @@
   "name": "DATEV Export",
   "version": "1.0.0",
   "description": "Buchungsstapel (EXTF) aus Rechnungen und Lohndaten (LODAS, Lohn und Gehalt) als DATEV-Dateien",
-  "longDescription": "Erzeugt DATEV-Importdateien aus Timesheet: einen Buchungsstapel im DATEV-Format (EXTF) aus den Ausgangsrechnungen der Organisation und Lohndaten (Arbeitsstunden, Abwesenheiten, Ueberstunden) fuer DATEV LODAS oder DATEV Lohn und Gehalt. Die Dateien werden zum Download bereitgestellt und vom Steuerberater importiert. Nur fuer Organisationen im Business-Plan.",
+  "longDescription": "Erzeugt DATEV-Importdateien aus Timesheet: einen Buchungsstapel im DATEV-Format (EXTF) aus den Ausgangsrechnungen der Organisation und Lohndaten (Arbeitsstunden, Abwesenheiten, Überstunden) für DATEV LODAS oder DATEV Lohn und Gehalt. Die Dateien werden zum Download bereitgestellt und vom Steuerberater importiert. Nur für Organisationen im Business-Plan.",
   "icon": "datev",
   "category": "accounting",
   "tags": [
@@ -28,7 +28,7 @@
         "type": "string",
         "title": "Mandantennummer",
         "x-ui-placeholder": "12345",
-        "x-ui-help": "Die Mandantennummer, unter der Ihre Kanzlei Ihr Unternehmen fuehrt (1 bis 5 Stellen)."
+        "x-ui-help": "Die Mandantennummer, unter der Ihre Kanzlei Ihr Unternehmen führt (1 bis 5 Stellen)."
       },
       "skr": {
         "type": "string",
@@ -36,11 +36,11 @@
         "enum": ["SKR03", "SKR04"],
         "default": "SKR03",
         "x-ui-widget": "radio",
-        "x-ui-help": "Der Standardkontenrahmen Ihrer Buchhaltung. Bestimmt die vorbelegten Erloeskonten."
+        "x-ui-help": "Der Standardkontenrahmen Ihrer Buchhaltung. Bestimmt die vorbelegten Erlöskonten."
       },
       "sachkontenlaenge": {
         "type": "integer",
-        "title": "Sachkontenlaenge",
+        "title": "Sachkontenlänge",
         "default": 4,
         "x-ui-placeholder": "4",
         "x-ui-help": "Stellenzahl der Sachkonten (4 bis 8). Debitorenkonten haben eine Stelle mehr."
@@ -50,7 +50,7 @@
         "title": "Wirtschaftsjahresbeginn",
         "default": "01.01.",
         "x-ui-placeholder": "TT.MM.",
-        "x-ui-help": "Beginn des Wirtschaftsjahres als Tag und Monat, z. B. 01.01. oder 01.04. Ein Zeitraum ueber zwei Wirtschaftsjahre ergibt zwei Dateien."
+        "x-ui-help": "Beginn des Wirtschaftsjahres als Tag und Monat, z. B. 01.01. oder 01.04. Ein Zeitraum über zwei Wirtschaftsjahre ergibt zwei Dateien."
       },
       "formatVersion": {
         "type": "string",
@@ -65,13 +65,13 @@
         "enum": ["windows-1252", "utf-8"],
         "default": "windows-1252",
         "x-ui-widget": "radio",
-        "x-ui-help": "Windows-1252 (ANSI) ist der Standard fuer den DATEV-Import. UTF-8 nur, wenn Ihre Kanzlei es ausdruecklich verlangt."
+        "x-ui-help": "Windows-1252 (ANSI) ist der Standard für den DATEV-Import. UTF-8 nur, wenn Ihre Kanzlei es ausdrücklich verlangt."
       },
       "festschreibung": {
         "type": "boolean",
         "title": "Festschreibung",
         "default": false,
-        "x-ui-help": "Buchungen beim Import sofort festschreiben (GoBD). Aus, solange der Stapel noch geprueft wird."
+        "x-ui-help": "Buchungen beim Import sofort festschreiben (GoBD). Aus, solange der Stapel noch geprüft wird."
       },
       "steuersatzStandard": {
         "type": "string",
@@ -81,40 +81,40 @@
       },
       "steuersatzErmaessigt": {
         "type": "string",
-        "title": "Ermaessigter Steuersatz in Prozent",
+        "title": "Ermäßigter Steuersatz in Prozent",
         "default": "7",
         "x-ui-placeholder": "7"
       },
       "erloeskontoStandard": {
         "type": "string",
-        "title": "Erloeskonto Regelsteuersatz",
+        "title": "Erlöskonto Regelsteuersatz",
         "x-ui-placeholder": "8400 (SKR03) oder 4400 (SKR04)",
-        "x-ui-help": "Automatikkonto fuer Erloese zum Regelsteuersatz. Leer lassen fuer die Vorbelegung nach Kontenrahmen."
+        "x-ui-help": "Automatikkonto für Erlöse zum Regelsteuersatz. Leer lassen für die Vorbelegung nach Kontenrahmen."
       },
       "erloeskontoErmaessigt": {
         "type": "string",
-        "title": "Erloeskonto ermaessigter Steuersatz",
+        "title": "Erlöskonto ermäßigter Steuersatz",
         "x-ui-placeholder": "8300 (SKR03) oder 4300 (SKR04)",
-        "x-ui-help": "Automatikkonto fuer Erloese zum ermaessigten Steuersatz. Leer lassen fuer die Vorbelegung."
+        "x-ui-help": "Automatikkonto für Erlöse zum ermäßigten Steuersatz. Leer lassen für die Vorbelegung."
       },
       "erloeskontoSteuerfrei": {
         "type": "string",
-        "title": "Erloeskonto steuerfrei",
+        "title": "Erlöskonto steuerfrei",
         "x-ui-placeholder": "8100 (SKR03) oder 4100 (SKR04)",
-        "x-ui-help": "Konto fuer steuerfreie Umsaetze und Rechnungen ohne Umsatzsteuer. Leer lassen fuer die Vorbelegung."
+        "x-ui-help": "Konto für steuerfreie Umsätze und Rechnungen ohne Umsatzsteuer. Leer lassen für die Vorbelegung."
       },
       "erloeskontoReverseCharge": {
         "type": "string",
-        "title": "Erloeskonto Reverse Charge",
-        "x-ui-placeholder": "8337 (SKR03) oder 4337 (SKR04)",
-        "x-ui-help": "Automatikkonto fuer Leistungen, bei denen der Leistungsempfaenger die Umsatzsteuer schuldet (Paragraf 13b UStG). Leer lassen fuer die Vorbelegung."
+        "title": "Erlöskonto Reverse Charge",
+        "x-ui-placeholder": "8336 (SKR03) oder 4336 (SKR04)",
+        "x-ui-help": "Automatikkonto für sonstige Leistungen an Unternehmen im EU-Ausland, bei denen der Leistungsempfänger die Umsatzsteuer schuldet (Reverse Charge). Für Inlandsfälle nach § 13b UStG 8337 (SKR03) oder 4337 (SKR04) eintragen. Leer lassen für die Vorbelegung."
       },
       "debitorStandard": {
         "type": "string",
         "title": "Sammeldebitor",
         "default": "10000",
         "x-ui-placeholder": "10000",
-        "x-ui-help": "Debitorenkonto fuer Kunden ohne eigene Zuordnung in der Mapping-Tabelle."
+        "x-ui-help": "Debitorenkonto für Kunden ohne eigene Zuordnung in der Mapping-Tabelle."
       },
       "payrollTarget": {
         "type": "string",
@@ -128,57 +128,57 @@
         "type": "string",
         "title": "Mandantennummer Lohn",
         "x-ui-placeholder": "Leer, wenn identisch mit der Mandantennummer",
-        "x-ui-help": "Nur ausfuellen, wenn Ihre Kanzlei die Lohnabrechnung unter einer anderen Mandantennummer fuehrt."
+        "x-ui-help": "Nur ausfüllen, wenn Ihre Kanzlei die Lohnabrechnung unter einer anderen Mandantennummer führt."
       },
       "lohnartArbeitsstunden": {
         "type": "string",
         "title": "Lohnart Arbeitsstunden",
         "x-ui-placeholder": "z. B. 100",
-        "x-ui-help": "Lohnart, auf die die erfassten Arbeitsstunden gebucht werden. Leer lassen, wenn Stunden nicht uebergeben werden sollen."
+        "x-ui-help": "Lohnart, auf die die erfassten Arbeitsstunden gebucht werden. Leer lassen, wenn Stunden nicht übergeben werden sollen."
       },
       "lohnartUeberstunden": {
         "type": "string",
-        "title": "Lohnart Ueberstunden",
+        "title": "Lohnart Überstunden",
         "x-ui-placeholder": "z. B. 200",
-        "x-ui-help": "Lohnart fuer die Ueberstunden aus dem Ueberstundenkonto des Zeitraums. Leer lassen, wenn nicht gewuenscht."
+        "x-ui-help": "Lohnart für die Überstunden aus dem Überstundenkonto des Zeitraums. Leer lassen, wenn nicht gewünscht."
       },
       "lohnartMinderstunden": {
         "type": "string",
         "title": "Lohnart Minderstunden",
         "x-ui-placeholder": "z. B. 201",
-        "x-ui-help": "Lohnart fuer Minderstunden. Leer lassen, wenn nicht gewuenscht."
+        "x-ui-help": "Lohnart für Minderstunden. Leer lassen, wenn nicht gewünscht."
       },
-      "taggeldKeyword": {
+      "verpflegungKeyword": {
         "type": "string",
-        "title": "Stichwort Taggeld",
-        "default": "Taggeld",
-        "x-ui-placeholder": "Taggeld",
-        "x-ui-help": "Ausgaben, deren Beschreibung dieses Stichwort enthaelt, werden als Taggeld summiert. Leer lassen, wenn keine Taggelder uebergeben werden sollen."
+        "title": "Stichwort Verpflegungsmehraufwand",
+        "default": "Verpflegung",
+        "x-ui-placeholder": "Verpflegung",
+        "x-ui-help": "Ausgaben, deren Beschreibung dieses Stichwort enthält, werden als Verpflegungsmehraufwand summiert. Leer lassen, wenn kein Verpflegungsmehraufwand übergeben werden soll."
       },
-      "naechtigungsgeldKeyword": {
+      "uebernachtungKeyword": {
         "type": "string",
-        "title": "Stichwort Naechtigungsgeld",
-        "default": "Nächtigungsgeld",
-        "x-ui-placeholder": "Nächtigungsgeld",
-        "x-ui-help": "Ausgaben, deren Beschreibung dieses Stichwort enthaelt, werden als Naechtigungsgeld summiert. Leer lassen, wenn nicht gewuenscht."
+        "title": "Stichwort Übernachtungskosten",
+        "default": "Übernachtung",
+        "x-ui-placeholder": "Übernachtung",
+        "x-ui-help": "Ausgaben, deren Beschreibung dieses Stichwort enthält, werden als Übernachtungskosten summiert. Leer lassen, wenn nicht gewünscht."
       },
-      "lohnartTaggeld": {
+      "lohnartVerpflegung": {
         "type": "string",
-        "title": "Lohnart Taggeld",
+        "title": "Lohnart Verpflegungsmehraufwand",
         "x-ui-placeholder": "z. B. 500",
-        "x-ui-help": "Lohnart, auf die die Taggeld-Betraege gebucht werden. Leer lassen, wenn Taggelder nicht uebergeben werden sollen."
+        "x-ui-help": "Lohnart, auf die der Verpflegungsmehraufwand gebucht wird. Leer lassen, wenn er nicht übergeben werden soll."
       },
-      "lohnartNaechtigungsgeld": {
+      "lohnartUebernachtung": {
         "type": "string",
-        "title": "Lohnart Naechtigungsgeld",
+        "title": "Lohnart Übernachtungskosten",
         "x-ui-placeholder": "z. B. 501",
-        "x-ui-help": "Lohnart, auf die die Naechtigungsgeld-Betraege gebucht werden. Leer lassen, wenn nicht gewuenscht."
+        "x-ui-help": "Lohnart, auf die die Übernachtungskosten gebucht werden. Leer lassen, wenn nicht gewünscht."
       },
       "customerWindowMonths": {
         "type": "integer",
         "title": "Kundenliste: Zeitfenster in Monaten",
         "default": 24,
-        "x-ui-help": "Aus den Rechnungen dieser Monate wird die Kundenliste fuer die Debitorenzuordnung gebildet."
+        "x-ui-help": "Aus den Rechnungen dieser Monate wird die Kundenliste für die Debitorenzuordnung gebildet."
       },
       "monthlyBuchungsstapel": {
         "type": "boolean",
@@ -195,7 +195,7 @@
     "x-ui-groups": [
       { "title": "Mandant", "fields": ["beraternummer", "mandantennummer", "skr", "sachkontenlaenge", "wirtschaftsjahrBeginn", "formatVersion", "charset"] },
       { "title": "Buchhaltung", "fields": ["festschreibung", "steuersatzStandard", "steuersatzErmaessigt", "erloeskontoStandard", "erloeskontoErmaessigt", "erloeskontoSteuerfrei", "erloeskontoReverseCharge", "debitorStandard", "customerWindowMonths"] },
-      { "title": "Lohn", "fields": ["payrollTarget", "mandantLohn", "lohnartArbeitsstunden", "lohnartUeberstunden", "lohnartMinderstunden", "taggeldKeyword", "lohnartTaggeld", "naechtigungsgeldKeyword", "lohnartNaechtigungsgeld"] },
+      { "title": "Lohn", "fields": ["payrollTarget", "mandantLohn", "lohnartArbeitsstunden", "lohnartUeberstunden", "lohnartMinderstunden", "verpflegungKeyword", "lohnartVerpflegung", "uebernachtungKeyword", "lohnartUebernachtung"] },
       { "title": "Monatlicher Lauf", "fields": ["monthlyBuchungsstapel", "monthlyLohn"] }
     ]
   },
@@ -256,7 +256,7 @@
       "id": "export-bookings",
       "type": "user_action",
       "name": "Buchungsstapel",
-      "description": "Buchungsstapel fuer einen Zeitraum erzeugen",
+      "description": "Buchungsstapel für einen Zeitraum erzeugen",
       "configurable": false,
       "userAction": {
         "label": "Buchungsstapel erzeugen",
@@ -268,7 +268,7 @@
       "id": "export-payroll",
       "type": "user_action",
       "name": "Lohndaten",
-      "description": "Lohndaten fuer einen Zeitraum erzeugen",
+      "description": "Lohndaten für einen Zeitraum erzeugen",
       "configurable": false,
       "userAction": {
         "label": "Lohndaten erzeugen",
@@ -280,7 +280,7 @@
       "id": "monthly",
       "type": "schedule",
       "name": "Monatlicher Export",
-      "description": "Erzeugt am 1. jedes Monats die Dateien fuer den Vormonat",
+      "description": "Erzeugt am 1. jedes Monats die Dateien für den Vormonat",
       "schedule": "0 6 1 * *",
       "timezone": "Europe/Berlin",
       "catchUpPolicy": "run_once",
@@ -329,7 +329,7 @@
             "type": "string",
             "title": "Bis",
             "x-ui-placeholder": "JJJJ-MM-TT",
-            "x-ui-help": "Letzter Tag des Zeitraums"
+            "x-ui-help": "Letzter Tag des Zeitraums, im selben Kalendermonat wie Von"
           }
         },
         "required": ["from", "to"]
@@ -378,7 +378,7 @@
           "id": "payroll",
           "type": "action_button",
           "title": "Lohndaten",
-          "description": "Arbeitsstunden, Abwesenheiten und Ueberstunden fuer LODAS oder Lohn und Gehalt",
+          "description": "Arbeitsstunden, Abwesenheiten und Überstunden für LODAS oder Lohn und Gehalt",
           "config": {
             "actionId": "build-payroll",
             "label": "Lohndaten erzeugen",

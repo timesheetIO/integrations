@@ -4,12 +4,18 @@ import { buildLodasBewegungsdaten, buildLodasStammdaten, lodasFilenames } from '
 import { buildLugBewegungsdaten, lugFilename } from '../lib/lug';
 import { collectPayrollFacts } from '../lib/payroll';
 import { DatevConfig, ExportResult, PeriodInput } from '../lib/types';
-import { WarningCollector, encodeForFile } from '../lib/writer';
+import { WarningCollector, encodeForFile, monthBounds } from '../lib/writer';
 
 export const buildPayroll = defineHandler<PeriodInput | undefined, ExportResult, DatevConfig>(async (input, context) => {
   const organizationId = requireOrganization(context);
   const config = resolveConfig(context.config);
   const period = resolvePeriod(input);
+  // LODAS and Lohn und Gehalt book every line on one Abrechnungsmonat.
+  if (period.to > monthBounds(period.from).to) {
+    throw new Error(
+      `Lohndaten werden pro Abrechnungsmonat erzeugt. Der Zeitraum ${period.from} bis ${period.to} umfasst mehrere Monate; bitte einen Zeitraum innerhalb eines Kalendermonats wählen.`
+    );
+  }
   const warnings = new WarningCollector();
 
   context.logger.info('Building DATEV payroll export', { organizationId, period, target: config.payrollTarget });

@@ -1,6 +1,6 @@
 import type { EmployeeFacts, WageLine } from './payroll';
 import type { Period, ResolvedConfig } from './types';
-import { FormatProfile, RecordWriter, formatDate } from './writer';
+import { FormatProfile, RecordWriter, formatDate, monthBounds } from './writer';
 
 /**
  * DATEV LODAS import files (ASCII, Windows-1252, CRLF).
@@ -70,7 +70,7 @@ export function buildLodasStammdaten(employees: EmployeeFacts[], config: Resolve
 
 export function buildLodasBewegungsdaten(employees: EmployeeFacts[], config: ResolvedConfig, period: Period): string {
   const w = new RecordWriter(PROFILE);
-  const abrechnungszeitraum = formatDate(period.from, 'DD.MM.YYYY');
+  const abrechnungszeitraum = formatDate(monthBounds(period.from).from, 'DD.MM.YYYY');
   const lines = [
     ...allgemein(config),
     '[Satzbeschreibung]',

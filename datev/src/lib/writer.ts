@@ -50,7 +50,7 @@ export function toScaled(value: string | number | null | undefined, scale: numbe
     str = str.slice(1);
   }
   if (!/^\d*(\.\d*)?$/.test(str)) {
-    throw new Error(`Not a decimal: ${value}`);
+    throw new Error(`Keine Dezimalzahl: ${value}`);
   }
   const [intPartRaw, fracRaw = ''] = str.split('.');
   const intPart = intPartRaw === '' ? '0' : intPartRaw;
@@ -122,7 +122,7 @@ export function addDecimals(a: string | number, b: string | number, scale: numbe
 export function isoDate(value: string): string {
   const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value ?? '');
   if (!match) {
-    throw new Error(`Not an ISO date: ${value}`);
+    throw new Error(`Kein Datum im Format JJJJ-MM-TT: ${value}`);
   }
   return `${match[1]}-${match[2]}-${match[3]}`;
 }
@@ -274,7 +274,7 @@ export class PeriodGuard {
     this.from = isoDate(from);
     this.to = isoDate(to);
     if (this.from > this.to) {
-      throw new Error(`Period start ${this.from} is after period end ${this.to}`);
+      throw new Error(`Der Zeitraum beginnt (${this.from}) nach seinem Ende (${this.to}).`);
     }
   }
 
@@ -286,7 +286,7 @@ export class PeriodGuard {
   /** Throws when the date lies outside the declared period. */
   assert(date: string, label: string): void {
     if (!this.contains(date)) {
-      throw new Error(`${label}: date ${isoDate(date)} is outside the period ${this.from} to ${this.to}`);
+      throw new Error(`${label}: Datum ${isoDate(date)} liegt außerhalb des Zeitraums ${this.from} bis ${this.to}.`);
     }
   }
 

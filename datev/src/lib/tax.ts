@@ -87,7 +87,7 @@ export function classifyDocument(doc: DocumentDto, config: ResolvedConfig): Clas
     return {
       ok: false,
       code: 'unsupported_tax_rate',
-      message: `Steuersatz ${rate.replace('.', ',')} % entspricht weder dem Regelsteuersatz noch dem ermaessigten Steuersatz`
+      message: `Steuersatz ${rate.replace('.', ',')} % entspricht weder dem Regelsteuersatz noch dem ermäßigten Steuersatz`
     };
   }
   if (reason) {

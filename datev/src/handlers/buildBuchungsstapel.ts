@@ -44,7 +44,7 @@ export const buildBuchungsstapel = defineHandler<PeriodInput | undefined, Export
 
       const currency = (doc.eInvoiceCurrency ?? 'EUR').trim().toUpperCase() || 'EUR';
       if (currency !== 'EUR') {
-        warnings.add('foreign_currency', 'Rechnung in Fremdwaehrung ohne Kurs, ausgelassen', { invoiceId: doc.invoiceId, currency });
+        warnings.add('foreign_currency', 'Rechnung in Fremdwährung ohne Kurs, ausgelassen', { invoiceId: doc.invoiceId, currency });
         continue;
       }
       const classified = classifyDocument(doc, config);

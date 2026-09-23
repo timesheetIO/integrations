@@ -25,7 +25,7 @@ export function requireOrganization(context: IntegrationContext<unknown>): strin
   const organizationId = context.organizationId;
   if (!organizationId) {
     throw new Error(
-      'DATEV Export must be installed for an organization. Personal installations have no invoices, absences or overtime to export.'
+      'DATEV Export muss für eine Organisation installiert sein. Auf einem persönlichen Profil gibt es keine Rechnungen, Abwesenheiten oder Überstunden zum Exportieren.'
     );
   }
   return organizationId;
@@ -60,19 +60,19 @@ export function parseWjBeginn(value: string | undefined): { day: number; month: 
   const match = /^\s*(\d{1,2})\.(\d{1,2})\.?\s*$/.exec(value ?? '');
   if (!match) {
     if (!value || value.trim() === '') return { day: 1, month: 1 };
-    throw new Error(`Wirtschaftsjahresbeginn "${value}" is not in the form TT.MM.`);
+    throw new Error(`Wirtschaftsjahresbeginn "${value}" hat nicht die Form TT.MM.`);
   }
   const day = Number(match[1]);
   const month = Number(match[2]);
   if (day < 1 || day > 31 || month < 1 || month > 12) {
-    throw new Error(`Wirtschaftsjahresbeginn "${value}" is not a valid day and month`);
+    throw new Error(`Wirtschaftsjahresbeginn "${value}" ist kein gültiger Tag und Monat.`);
   }
   return { day, month };
 }
 
 const DEFAULT_ACCOUNTS = {
-  SKR03: { standard: '8400', reduced: '8300', taxFree: '8100', reverseCharge: '8337' },
-  SKR04: { standard: '4400', reduced: '4300', taxFree: '4100', reverseCharge: '4337' }
+  SKR03: { standard: '8400', reduced: '8300', taxFree: '8100', reverseCharge: '8336' },
+  SKR04: { standard: '4400', reduced: '4300', taxFree: '4100', reverseCharge: '4336' }
 } as const;
 
 export function resolveConfig(raw: DatevConfig | undefined): ResolvedConfig {
@@ -82,14 +82,14 @@ export function resolveConfig(raw: DatevConfig | undefined): ResolvedConfig {
   const beraternummer = asString(config.beraternummer, '');
   const mandantennummer = asString(config.mandantennummer, '');
   if (!/^\d{1,7}$/.test(beraternummer)) {
-    throw new Error('Beraternummer is missing or not numeric (1 to 7 digits). Set it in the integration settings.');
+    throw new Error('Beraternummer fehlt oder ist nicht numerisch (1 bis 7 Stellen). Bitte in den Einstellungen der Integration eintragen.');
   }
   if (!/^\d{1,5}$/.test(mandantennummer)) {
-    throw new Error('Mandantennummer is missing or not numeric (1 to 5 digits). Set it in the integration settings.');
+    throw new Error('Mandantennummer fehlt oder ist nicht numerisch (1 bis 5 Stellen). Bitte in den Einstellungen der Integration eintragen.');
   }
   const sachkontenlaenge = asInt(config.sachkontenlaenge, 4);
   if (sachkontenlaenge < 4 || sachkontenlaenge > 8) {
-    throw new Error('Sachkontenlaenge must be between 4 and 8.');
+    throw new Error('Die Sachkontenlänge muss zwischen 4 und 8 liegen.');
   }
   return {
     beraternummer,
@@ -112,10 +112,10 @@ export function resolveConfig(raw: DatevConfig | undefined): ResolvedConfig {
     lohnartArbeitsstunden: asString(config.lohnartArbeitsstunden, ''),
     lohnartUeberstunden: asString(config.lohnartUeberstunden, ''),
     lohnartMinderstunden: asString(config.lohnartMinderstunden, ''),
-    taggeldKeyword: asStringOrEmpty(config.taggeldKeyword, 'Taggeld'),
-    naechtigungsgeldKeyword: asStringOrEmpty(config.naechtigungsgeldKeyword, 'Nächtigungsgeld'),
-    lohnartTaggeld: asString(config.lohnartTaggeld, ''),
-    lohnartNaechtigungsgeld: asString(config.lohnartNaechtigungsgeld, ''),
+    verpflegungKeyword: asStringOrEmpty(config.verpflegungKeyword, 'Verpflegung'),
+    uebernachtungKeyword: asStringOrEmpty(config.uebernachtungKeyword, 'Übernachtung'),
+    lohnartVerpflegung: asString(config.lohnartVerpflegung, ''),
+    lohnartUebernachtung: asString(config.lohnartUebernachtung, ''),
     customerWindowMonths: Math.max(1, asInt(config.customerWindowMonths, 24)),
     monthlyBuchungsstapel: asBool(config.monthlyBuchungsstapel, true),
     monthlyLohn: asBool(config.monthlyLohn, true)
@@ -133,7 +133,7 @@ export function parseInputDate(value: string | undefined, label: string): string
   try {
     return isoDate(v);
   } catch {
-    throw new Error(`${label}: "${value}" is not a date (use JJJJ-MM-TT or TT.MM.JJJJ)`);
+    throw new Error(`${label}: "${value}" ist kein Datum (JJJJ-MM-TT oder TT.MM.JJJJ verwenden).`);
   }
 }
 
@@ -145,10 +145,10 @@ export function resolvePeriod(input: PeriodInput | undefined, now: Date = new Da
     return previousMonth(now);
   }
   if (!from || !to) {
-    throw new Error('Both "Von" and "Bis" are required for a custom period.');
+    throw new Error('Für einen eigenen Zeitraum sind "Von" und "Bis" erforderlich.');
   }
   if (from > to) {
-    throw new Error(`"Von" (${from}) is after "Bis" (${to}).`);
+    throw new Error(`"Von" (${from}) liegt nach "Bis" (${to}).`);
   }
   return { from, to };
 }
