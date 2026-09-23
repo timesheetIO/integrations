@@ -137,7 +137,7 @@ Slug
 bmd-ntcs-export
 
 Version
-1.0.0
+1.0.1
 
 Category
 accounting
@@ -164,10 +164,10 @@ NPM Package Source
 @timesheet/plugin-bmd
 
 Package Version
-1.0.0
+1.0.1
 
 Package Integrity
-sha512-zTHO6UM6zNVNSFAPVHFVuz4xzd8Eb8wXLOr79L0Vuv0nApCwcBaybS8XyxdBH1O3xhB/oeOQwYbQ3JWeAX5qhQ==
+sha512-iT+rhpxqMGeUR1XMnYU45rOIzrxwI2cM6dXPzZJo6D8grhl9S2cPEh1kDJ/Q+ltSPJBxI1S/aqDnWpGo4qEGhQ==
 
 
 ================================================================================
@@ -184,7 +184,7 @@ Slug
 datev-export
 
 Version
-1.0.0
+1.0.1
 
 Category
 accounting
@@ -211,7 +211,7 @@ NPM Package Source
 @timesheet/plugin-datev
 
 Package Version
-1.0.0
+1.0.1
 
 Package Integrity
-sha512-RtBMuYajQdcSeTgLUytUsKd0+seA5w4cbOuzCo3CisyMjQKd9pptzGl08XfdcR0wt0FY3suS8ytd0NurHqbAbQ==
+sha512-mteQBMQAWFc/L1Eirypri5ZtAQ6/uCLM126qZ9mCSUcoE2WunU8f0Npa1/hUtbmbcN0aUmRujxIKV7Cmw/m1KA==
