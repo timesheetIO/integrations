@@ -2,7 +2,7 @@
   "name": "@timesheet/plugin-bmd",
   "version": "1.0.0",
   "description": "Export invoices and payroll data for BMD NTCS",
-  "homepage": "https://timesheet.io/en/integrations/bmd",
+  "homepage": "https://docs.timesheet.io/integrations/bmd/",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/timesheetIO/integrations.git",

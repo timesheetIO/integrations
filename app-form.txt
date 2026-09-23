@@ -149,7 +149,7 @@ Beschreibung
 Exports outgoing invoices as a BMD NTCS FIBU booking import file and worked time, overtime, absences and travel allowances as a BMD NTCS payroll import file. Debtor accounts, employee numbers and wage types are mapped in Timesheet and typed in from the tax advisor. Exports run on demand for any period from the integration page and automatically for the previous month. Organization installs only; the organization needs the Business plan. The exact NTCS column layout must be confirmed against the customer's import definition before release.
 
 Bild
-https://timesheet.io/img/integrations/bmd-light.png
+(leave empty)
 
 Icon URL
 https://timesheet.io/img/integrations/icons/bmd.png
@@ -167,7 +167,7 @@ Package Version
 1.0.0
 
 Package Integrity
-(fill in from the npm registry after the first publish of @timesheet/plugin-bmd 1.0.0; the image and icon assets above must be added to landing/public/img/integrations first)
+(fill in from the npm registry after the first publish of @timesheet/plugin-bmd 1.0.0; the icon above is served once landing/public/img/integrations/icons is deployed)
 
 
 ================================================================================
@@ -196,7 +196,7 @@ Beschreibung
 Exports outgoing invoices as a DATEV Buchungsstapel (EXTF, format version 700) and worked time, overtime and absences as DATEV Lohn und Gehalt or LODAS import files. Debtor accounts, Personalnummern and Lohnarten are mapped in Timesheet and typed in from the tax advisor; the file is handed to the Kanzlei for import. Exports run on demand for any period from the integration page and automatically for the previous month. Organization installs only; the organization needs the Business plan.
 
 Bild
-https://timesheet.io/img/integrations/datev-light.png
+(leave empty)
 
 Icon URL
 https://timesheet.io/img/integrations/icons/datev.png
@@ -214,4 +214,4 @@ Package Version
 1.0.0
 
 Package Integrity
-(fill in from the npm registry after the first publish of @timesheet/plugin-datev 1.0.0; the image and icon assets above must be added to landing/public/img/integrations first)
+(fill in from the npm registry after the first publish of @timesheet/plugin-datev 1.0.0; the icon above is served once landing/public/img/integrations/icons is deployed)
