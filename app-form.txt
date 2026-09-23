@@ -167,7 +167,7 @@ Package Version
 1.0.0
 
 Package Integrity
-(fill in from the npm registry after the first publish of @timesheet/plugin-bmd 1.0.0; the icon above is served once landing/public/img/integrations/icons is deployed)
+sha512-zTHO6UM6zNVNSFAPVHFVuz4xzd8Eb8wXLOr79L0Vuv0nApCwcBaybS8XyxdBH1O3xhB/oeOQwYbQ3JWeAX5qhQ==
 
 
 ================================================================================
@@ -214,4 +214,4 @@ Package Version
 1.0.0
 
 Package Integrity
-(fill in from the npm registry after the first publish of @timesheet/plugin-datev 1.0.0; the icon above is served once landing/public/img/integrations/icons is deployed)
+sha512-RtBMuYajQdcSeTgLUytUsKd0+seA5w4cbOuzCo3CisyMjQKd9pptzGl08XfdcR0wt0FY3suS8ytd0NurHqbAbQ==
