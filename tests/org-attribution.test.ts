@@ -318,6 +318,70 @@ describe('monday attributes imported time', () => {
   });
 });
 
+describe('monday keeps standalone time entries out of the todo list', () => {
+  // A time entry without a synced ToDo is written as a top-level item, which
+  // the inbound pass must not mistake for a ToDo.
+  const topLevelItem = {
+    id: 'item-1',
+    name: 'Consulting',
+    state: 'active',
+    updated_at: '2026-02-20T12:00:00.000Z',
+    board: { id: 'external-project-1' },
+    column_values: []
+  };
+
+  const routeGraphql = (_url: string, init?: RequestInit) => {
+    const query = typeof init?.body === 'string' ? init.body : '';
+    if (query.includes('items_page')) {
+      return { data: { boards: [{ items_page: { cursor: null, items: [topLevelItem] } }] } };
+    }
+    return { data: {} };
+  };
+
+  const timeEntryMapping: MappingRecord = {
+    localId: 'task-1',
+    externalId: 'item-1',
+    syncStatus: 'SYNCED',
+    metadata: { boardId: 'external-project-1' }
+  };
+
+  it('does not import an item that is mapped as a time entry', async () => {
+    installFetch(routeGraphql);
+    const createTodo = jest.fn();
+
+    await mondayFullSync(
+      undefined,
+      buildContext(
+        {},
+        mappings({
+          list: (entity) => (entity === 'project' ? [projectMapping] : []),
+          findByExternal: (entity, externalId) =>
+            entity === 'task' && externalId === 'item-1' ? timeEntryMapping : null
+        }),
+        { createTodo }
+      )
+    );
+
+    expect(createTodo).not.toHaveBeenCalled();
+  });
+
+  it('still imports an unmapped top-level item as a todo', async () => {
+    installFetch(routeGraphql);
+    const createTodo = jest.fn().mockResolvedValue({ id: 'todo-9', lastUpdate: 1 });
+
+    await mondayFullSync(
+      undefined,
+      buildContext(
+        {},
+        mappings({ list: (entity) => (entity === 'project' ? [projectMapping] : []) }),
+        { createTodo }
+      )
+    );
+
+    expect(createTodo).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'project-1', name: 'Consulting' }));
+  });
+});
+
 describe('clickup carries assignees into imported todos', () => {
   const clickupTask = (assigneeIds: string[]) => ({
     id: 'cu-1',

@@ -724,6 +724,18 @@ async function syncSingleExternalItem(
   if (external.parent_item?.id) {
     return syncInboundTaskFromSubitem(context, projectMapping, external, users);
   }
+  // A time entry without a synced ToDo is written as a top-level item (see
+  // syncTaskToMonday), so a parentless item can be one of ours that is mapped
+  // as a task. Importing it as a ToDo would turn every such entry into a new
+  // ToDo on each full sync.
+  const ownTimeEntry = await context.mappings.findByExternal({
+    system: SYSTEM,
+    entity: TASK_ENTITY,
+    externalId: external.id
+  });
+  if (ownTimeEntry?.localId) {
+    return false;
+  }
   return syncInboundTodoFromItem(context, projectMapping, external);
 }
 
