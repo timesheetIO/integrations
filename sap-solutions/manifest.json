@@ -1,0 +1,291 @@
+{
+  "id": "sap-solutions",
+  "name": "Timesheet for SAP® solutions",
+  "version": "1.0.0",
+  "description": "Worked time and absences as import files for SAP SuccessFactors® solutions and the Cross-Application Time Sheet (CATS) in SAP S/4HANA® software",
+  "longDescription": "Creates import files from Timesheet for two SAP® solutions. For SAP SuccessFactors® Employee Central: the standard CSV imports External Time Data (worked time) and Employee Time (approved absences), uploaded in Admin Center under Import and Export Data. For the Cross-Application Time Sheet (CATS) in SAP S/4HANA® software or SAP ERP: one CSV per period with personnel number, date, hours, WBS element or cost center and activity type, which your SAP team loads with their load program. Works on an organization or, for consultants booking into a client's CATS, on a personal profile. Timesheet is not affiliated with or certified by SAP. SAP, SAP S/4HANA and SAP SuccessFactors are trademarks or registered trademarks of SAP SE or its affiliates in Germany and in other countries.",
+  "icon": "sap-solutions",
+  "category": "accounting",
+  "tags": [
+    "sap",
+    "successfactors",
+    "cats",
+    "s4hana",
+    "timesheet",
+    "export",
+    "payroll"
+  ],
+  "dataAccess": ["tasks", "tags", "absences", "colleagues"],
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "target": {
+        "type": "string",
+        "title": "Target system",
+        "enum": ["cats", "successfactors"],
+        "default": "cats",
+        "x-ui-widget": "radio",
+        "x-ui-help": "cats: Cross-Application Time Sheet in SAP S/4HANA® software or SAP ERP. successfactors: SAP SuccessFactors® Employee Central time sheet (organizations only)."
+      },
+      "personnelNumber": {
+        "type": "string",
+        "title": "Your personnel number (personal profile only)",
+        "x-ui-placeholder": "00012345",
+        "x-ui-help": "Personal profile only: the personnel number (Personalnummer) your client's SAP system uses for you. Organizations map their members under Mappings instead."
+      },
+      "companyCode": {
+        "type": "string",
+        "title": "Company code (CATS only)",
+        "x-ui-placeholder": "1010",
+        "x-ui-help": "CATS only: the SAP company code (Buchungskreis) written in every row. Leave empty if your load program does not need it."
+      },
+      "costObjectType": {
+        "type": "string",
+        "title": "Cost object of a project (CATS only)",
+        "enum": ["wbs", "costCenter", "order"],
+        "default": "wbs",
+        "x-ui-help": "CATS only: what the project mapping holds. wbs: WBS element (PSP-Element). costCenter: receiver cost center (Kostenstelle). order: internal order (Innenauftrag)."
+      },
+      "defaultActivityType": {
+        "type": "string",
+        "title": "Default activity type (CATS only)",
+        "x-ui-placeholder": "1000",
+        "x-ui-help": "CATS only: activity type (Leistungsart) for tasks without a mapped tag."
+      },
+      "aggregation": {
+        "type": "string",
+        "title": "Rows (CATS only)",
+        "enum": ["day", "task"],
+        "default": "day",
+        "x-ui-widget": "radio",
+        "x-ui-help": "CATS only: day writes one row per person, day, cost object and activity type. task writes one row per task and day."
+      },
+      "timeMode": {
+        "type": "string",
+        "title": "Time recording (SuccessFactors only)",
+        "enum": ["duration", "clock"],
+        "default": "duration",
+        "x-ui-widget": "radio",
+        "x-ui-help": "SuccessFactors only: duration writes hours per day for duration-based employees. clock writes start and end times plus breaks for clock-time-based employees."
+      },
+      "defaultTimeType": {
+        "type": "string",
+        "title": "Attendance time type (SuccessFactors only)",
+        "x-ui-help": "SuccessFactors only: external code of the attendance time type for tasks without a mapped tag. Leave empty to use the default import attendance type of the time profile."
+      },
+      "clockFormat": {
+        "type": "string",
+        "title": "Clock format (SuccessFactors only)",
+        "enum": ["24h", "12h"],
+        "default": "24h",
+        "x-ui-widget": "radio",
+        "x-ui-help": "SuccessFactors only: 12h if the person uploading the file is signed in to SuccessFactors in US English, otherwise 24h."
+      },
+      "includeAbsences": {
+        "type": "boolean",
+        "title": "Export approved absences (SuccessFactors only)",
+        "default": false,
+        "x-ui-help": "SuccessFactors only: also write an Employee Time file with approved absences. Leave off if employees request leave in SAP SuccessFactors® Time Off, or absences would be booked twice."
+      },
+      "separator": {
+        "type": "string",
+        "title": "Field separator (CATS only)",
+        "enum": [";", ",", "tab", "|"],
+        "default": ";",
+        "x-ui-help": "CATS only: must match your load program. SuccessFactors files always use a comma."
+      },
+      "decimalMark": {
+        "type": "string",
+        "title": "Decimal mark (CATS only)",
+        "enum": [",", "."],
+        "default": ","
+      },
+      "dateFormat": {
+        "type": "string",
+        "title": "Date format (CATS only)",
+        "enum": ["YYYYMMDD", "DD.MM.YYYY", "DDMMYYYY", "YYYY-MM-DD"],
+        "default": "YYYYMMDD",
+        "x-ui-help": "CATS only: YYYYMMDD is the SAP internal date format. SuccessFactors files always use MM/DD/YYYY."
+      },
+      "charset": {
+        "type": "string",
+        "title": "Character set (CATS only)",
+        "enum": ["utf-8", "windows-1252", "iso-8859-1"],
+        "default": "utf-8",
+        "x-ui-help": "CATS only: windows-1252 for older SAP ERP systems that cannot read UTF-8."
+      },
+      "headerRow": {
+        "type": "boolean",
+        "title": "Header row with column names (CATS only)",
+        "default": true
+      },
+      "quoteText": {
+        "type": "boolean",
+        "title": "Text in quotes (CATS only)",
+        "default": false
+      }
+    }
+  },
+  "mappingSchema": {
+    "system": "sap-solutions",
+    "mappings": [
+      {
+        "id": "employees",
+        "title": "Employees",
+        "description": "The SAP key of each member: the personnel number for CATS, the user ID for SuccessFactors. Without a mapping the employee number from the member profile is used; members without either are skipped and reported.",
+        "localEntity": {
+          "type": "user",
+          "label": "Member",
+          "display": "{{displayName}}"
+        },
+        "externalEntity": {
+          "type": "employee-key",
+          "label": "Personnel number or user ID"
+        },
+        "required": false
+      },
+      {
+        "id": "cost-objects",
+        "title": "Projects to cost objects (CATS)",
+        "description": "The WBS element, cost center or internal order each project books onto, as set under Cost object of a project. Projects without one are exported with an empty cost object and reported.",
+        "localEntity": {
+          "type": "project",
+          "label": "Project",
+          "display": "{{title}}"
+        },
+        "externalEntity": {
+          "type": "cost-object",
+          "label": "WBS element, cost center or order"
+        },
+        "required": false
+      },
+      {
+        "id": "activity-types",
+        "title": "Tags to activity or time types",
+        "description": "CATS: the activity type (Leistungsart) a tag stands for. SuccessFactors: the attendance time type. Tasks without a mapped tag use the default from the settings.",
+        "localEntity": {
+          "type": "tag",
+          "label": "Tag",
+          "fetchAction": "list-tags"
+        },
+        "externalEntity": {
+          "type": "activity-type",
+          "label": "Activity type or time type"
+        },
+        "required": false
+      },
+      {
+        "id": "absence-types",
+        "title": "Absence types (SuccessFactors)",
+        "description": "The SAP SuccessFactors® Time Off time type of each absence type. Only used when approved absences are exported; unmapped types are skipped and reported.",
+        "localEntity": {
+          "type": "absence_type",
+          "label": "Absence type",
+          "fetchAction": "list-absence-types"
+        },
+        "externalEntity": {
+          "type": "time-type",
+          "label": "SuccessFactors time type"
+        },
+        "required": false
+      }
+    ]
+  },
+  "triggers": [
+    {
+      "id": "export",
+      "type": "user_action",
+      "name": "Create SAP import file",
+      "description": "Create the import file(s) for a period",
+      "configurable": false,
+      "userAction": {
+        "label": "Create import file",
+        "placement": "page"
+      },
+      "actionId": "build-export"
+    },
+    {
+      "id": "monthly",
+      "type": "schedule",
+      "name": "Monthly export",
+      "description": "Creates the files for the previous month on the 1st of each month",
+      "schedule": "0 6 1 * *",
+      "timezone": "Europe/Berlin",
+      "catchUpPolicy": "run_once",
+      "configurable": true,
+      "actionId": "build-monthly"
+    }
+  ],
+  "actions": [
+    {
+      "id": "build-export",
+      "name": "Create import file",
+      "handler": "buildExport",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "title": "From",
+            "x-ui-placeholder": "YYYY-MM-DD",
+            "x-ui-help": "First day of the period"
+          },
+          "to": {
+            "type": "string",
+            "title": "To",
+            "x-ui-placeholder": "YYYY-MM-DD",
+            "x-ui-help": "Last day of the period"
+          }
+        },
+        "required": ["from", "to"]
+      }
+    },
+    {
+      "id": "build-monthly",
+      "handler": "buildMonthly",
+      "internal": true
+    },
+    {
+      "id": "list-tags",
+      "handler": "listTags",
+      "internal": true
+    },
+    {
+      "id": "list-absence-types",
+      "handler": "listAbsenceTypes",
+      "internal": true
+    },
+    {
+      "id": "list-history",
+      "handler": "listHistory",
+      "internal": true
+    }
+  ],
+  "pages": [
+    {
+      "id": "export",
+      "title": "SAP® export",
+      "icon": "file-export",
+      "layout": "form",
+      "widgets": [
+        {
+          "id": "export",
+          "type": "action_button",
+          "title": "Import file",
+          "description": "CATS: one CSV for your SAP team's load program. SuccessFactors: CSV files for Admin Center, Import and Export Data.",
+          "config": {
+            "actionId": "build-export",
+            "label": "Create import file",
+            "variant": "primary"
+          }
+        },
+        {
+          "id": "history",
+          "type": "table",
+          "title": "Previous exports",
+          "dataSource": "list-history"
+        }
+      ]
+    }
+  ]
+}

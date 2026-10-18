@@ -215,3 +215,50 @@ Package Version
 
 Package Integrity
 sha512-mteQBMQAWFc/L1Eirypri5ZtAQ6/uCLM126qZ9mCSUcoE2WunU8f0Npa1/hUtbmbcN0aUmRujxIKV7Cmw/m1KA==
+
+
+================================================================================
+Timesheet for SAP® solutions
+================================================================================
+
+Integration Type
+Plugin Integration
+
+Name
+Timesheet for SAP® solutions
+
+Slug
+sap-solutions
+
+Version
+1.0.0
+
+Category
+accounting
+
+Tags
+sap,successfactors,cats,s4hana,timesheet,export,payroll
+
+Beschreibung
+Exports worked time as import files for two SAP® solutions. For SAP SuccessFactors® Employee Central: the standard CSV imports External Time Data (worked time, as hours or clock times with breaks) and Employee Time (approved absences), uploaded in Admin Center under Import and Export Data. For the Cross-Application Time Sheet (CATS) in SAP S/4HANA® software or SAP ERP: one CSV with personnel number, date, hours, WBS element, cost center or order, activity type and note, loaded by the customer's SAP team with their load program. Personnel numbers, cost objects, activity types and time types are mapped in Timesheet. Exports run on demand for any period and automatically for the previous month. Organization installs for both targets; personal profiles for CATS, so consultants can book into a client's SAP. Timesheet is not affiliated with or certified by SAP. SAP, SAP S/4HANA and SAP SuccessFactors are trademarks or registered trademarks of SAP SE or its affiliates in Germany and in other countries.
+
+Bild
+(leave empty)
+
+Icon URL
+https://timesheet.io/img/integrations/icons/sap-solutions.png
+
+Install Scope
+BOTH
+
+Minimum Plan
+pro
+
+NPM Package Source
+@timesheet/plugin-sap-solutions
+
+Package Version
+1.0.0
+
+Package Integrity
+(fill in after the npm publish)

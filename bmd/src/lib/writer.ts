@@ -1,9 +1,10 @@
 /**
  * Shared writer layer for accounting and payroll file exports.
  *
- * Kept byte-identical in integrations/datev/src/lib/writer.ts and
- * integrations/bmd/src/lib/writer.ts (plugins are published standalone, the same way
- * taskSync.ts is duplicated across the sync plugins). Fix both copies together.
+ * Kept byte-identical in integrations/datev/src/lib/writer.ts,
+ * integrations/bmd/src/lib/writer.ts and integrations/sap-solutions/src/lib/writer.ts
+ * (plugins are published standalone, the same way taskSync.ts is duplicated across the
+ * sync plugins). Fix all copies together.
  *
  * Runs inside the plugin isolate: no Node APIs, only globalThis.btoa / TextEncoder.
  */
