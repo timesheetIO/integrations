@@ -560,6 +560,15 @@ describe('datev buildPayroll', () => {
     expect(bewegung.slice(bewegung.indexOf('[Bewegungsdaten]') + 1)).toEqual(['200;"00001";01.08.2026;100;8,00;1;;']);
   });
 
+  it('subtracts breaks from worked hours', async () => {
+    // duration is end minus start; breaks come separately in durationBreak.
+    const withBreak = { ...task('u1', '2026-08-17', 28800), durationBreak: 1800 };
+    const h = createHarness({ colleagues: [colleagues[0]], tasks: [withBreak] });
+    await buildPayroll({ from: '2026-08-01', to: '2026-08-31' }, h.context);
+    const bewegung = lines(h.written[1].bytes);
+    expect(bewegung.slice(bewegung.indexOf('[Bewegungsdaten]') + 1)).toEqual(['200;"00001";01.08.2026;100;7,50;1;;']);
+  });
+
   it('warns when no wage type for worked hours is configured', async () => {
     const h = createHarness({ colleagues: [colleagues[0]], tasks: [tasks[0]], config: { lohnartArbeitsstunden: '' } });
     const result = await buildPayroll({ from: '2026-08-01', to: '2026-08-31' }, h.context);

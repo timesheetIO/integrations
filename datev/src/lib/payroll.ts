@@ -47,13 +47,15 @@ function splitName(member: Member): { firstname: string; lastname: string } {
   return { firstname: display.slice(0, idx), lastname: display.slice(idx + 1) };
 }
 
+/** Worked minutes of a task: `duration` is end minus start, so the breaks are subtracted. */
 function taskMinutes(task: TaskDto): number {
   if (task.running) return 0;
-  const seconds = typeof task.duration === 'number' && task.duration > 0 ? task.duration : null;
-  if (seconds !== null) return Math.round(seconds / 60);
+  const breakSeconds = typeof task.durationBreak === 'number' && task.durationBreak > 0 ? task.durationBreak : 0;
+  if (typeof task.duration === 'number' && task.duration > 0) {
+    return Math.max(0, Math.round((task.duration - breakSeconds) / 60));
+  }
   if (task.startDateTime && task.endDateTime) {
     const ms = Date.parse(task.endDateTime) - Date.parse(task.startDateTime);
-    const breakSeconds = typeof task.durationBreak === 'number' ? task.durationBreak : 0;
     return Math.max(0, Math.round(ms / 60000 - breakSeconds / 60));
   }
   return 0;
