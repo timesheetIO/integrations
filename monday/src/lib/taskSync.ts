@@ -566,7 +566,7 @@ async function* iterateLocalTodos(
   const pageSize = 100;
   let page = 1;
   while (true) {
-    const result = await context.data.listTodos({ projectId, page, count: pageSize });
+    const result = await context.data.listTodos({ projectId, page, limit: pageSize });
     const items = result?.items ?? [];
     for (const todo of items) yield todo;
     if (items.length < pageSize) break;
@@ -584,7 +584,7 @@ async function* iterateLocalTasks(
     const result = await context.data.listTasks({
       projectId,
       page,
-      count: pageSize,
+      limit: pageSize,
       populatePauses: false,
       populateExpenses: false,
       populateNotes: false,
