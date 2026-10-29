@@ -1,34 +1,41 @@
 # Outlook Calendar Sync
 
-> Intended integration between Timesheet tasks and Outlook (Microsoft 365) calendar events. Early scaffold, not yet functional.
+> Synchronize Timesheet tasks with Outlook Calendar.
 
-This package is an early scaffold. The handlers are wired into the plugin runtime and return placeholder results (for example, `testConnection` reports OK and `syncTaskToExternal` echoes the task id), but no calls are made to the Microsoft Graph or Outlook Calendar API yet. The manifest below describes the intended shape of the integration rather than working behavior.
+Bidirectional synchronization between Timesheet tasks and Outlook calendar events through Microsoft Graph. Each mapped Timesheet project corresponds to an Outlook calendar, so time entries appear as calendar events and calendar changes flow back into Timesheet. Works with Microsoft 365 work or school accounts in any tenant and with personal Outlook.com accounts.
 
 - Package: `@timesheet/plugin-outlook-calendar`
 - Manifest id: `outlook-calendar-sync`
 - Category: calendar
-- Status: scaffold (no Outlook Calendar API integration implemented)
 
 ## Authentication
 
-OAuth 2.0. Scopes are placeholders (`read`, `write`) and will be replaced with the real Microsoft Graph scopes when the integration is implemented.
+OAuth 2.0 against the Microsoft identity platform `common` endpoints (any tenant plus personal accounts), with PKCE. Delegated scopes `offline_access` and `Calendars.ReadWrite`. The refresh grant sends the same scopes (`refreshParams`). The client id and secret of the multi-tenant Entra app live on the Integration row; setup is in `backend/doc/integration/outlook.md`.
 
 ## Configuration
 
 | Option | Required | Default | Description |
 | --- | --- | --- | --- |
-| `syncDirection` | yes | `bidirectional` | One of `bidirectional`, `timesheet-to-external`, `external-to-timesheet`. |
+| `syncDirection` | yes | `bidirectional` | One of `bidirectional`, `timesheet-to-outlook`, `outlook-to-timesheet`. |
 
 ## Mappings
 
-- **Project mapping**: Timesheet project to Outlook calendar (placeholder, not yet wired to real Outlook entities).
+- **Calendar mapping**: Timesheet project to Outlook calendar.
+
+## How it syncs
+
+- **Timesheet to Outlook**: task changes create, update or delete events. Events carry a hidden `timesheetId` extended property, so a lost mapping (for example after a reinstall) relinks instead of duplicating.
+- **Outlook to Timesheet**: one change feed (`calendarView/delta`) per mapped calendar, covering a year back and a year ahead and restarted monthly. New events become tasks in the user's Timesheet time zone; events cancelled or deleted in Outlook delete their task.
+- **Notifications**: one Microsoft Graph subscription on the user's mailbox events (`me/events`). A notification only triggers a pass over the change feeds. The worker answers Graph's `validationToken` handshake on the webhook URL.
+- **Titles**: events created in Timesheet show the project title with the task description in the body. Events created in Outlook keep their subject, which stays in sync with the task description.
 
 ## Triggers
 
-- **Task Created** (event): scaffolded handler for new Timesheet tasks.
-- **Outlook Calendar Webhook** (webhook): scaffolded inbound endpoint.
-- **Scheduled Full Sync** (daily at 02:00 UTC): scaffolded background sync.
-- **Manual Sync** (user action): scaffolded sync from the integration settings page.
+- **Task Changed** (event, sync mode): syncs task create, update, and delete events to Outlook.
+- **Outlook Calendar Notifications** (webhook): Microsoft Graph change notifications.
+- **Scheduled Full Sync** (daily at 02:00 UTC): catches up on task changes.
+- **Subscription Renewal** (daily at 03:00 UTC): renews the subscription inside 48 hours of its expiry (Graph allows at most 10,080 minutes) and reads the change feeds once, which picks up missed notifications and calendars shared with the user.
+- **Manual Sync** (user action): reads the change feeds and sets up the subscription. `{ "fullResync": true }` starts the feeds over.
 
 ## Development
 

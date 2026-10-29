@@ -1,19 +1,42 @@
 {
   "id": "outlook-calendar-sync",
   "name": "Outlook Calendar Sync",
-  "version": "1.0.2",
-  "description": "Timesheet Outlook Calendar Sync plugin integration",
+  "version": "1.1.0",
+  "description": "Synchronize Timesheet tasks with Outlook Calendar",
+  "longDescription": "Bidirectional synchronization between Timesheet tasks and Microsoft Outlook calendar events, for Microsoft 365 work or school accounts and personal Outlook.com accounts. Each Timesheet project maps to an Outlook calendar. Time entries appear as events titled with the project name, with the task description in the event body; events created in Outlook become time entries, with the event subject as the description. Changes, cancellations and deletions flow both ways: Microsoft Graph change notifications bring Outlook edits in, and a daily pass catches up anything that was missed. Events that ended more than 12 months ago are not imported. In many work or school organizations, a Microsoft 365 administrator has to approve Timesheet once before members can connect. Microsoft and Outlook are trademarks of the Microsoft group of companies.",
+  "icon": "outlook-calendar",
   "category": "calendar",
-  "tags": ["sync", "timesheet", "outlook-calendar"],
-  "dataAccess": ["projects", "tasks", "colleagues", "settings"],
+  "tags": [
+    "sync",
+    "timesheet",
+    "outlook-calendar",
+    "outlook",
+    "microsoft-365",
+    "calendar"
+  ],
+  "dataAccess": [
+    "projects",
+    "tasks",
+    "settings"
+  ],
   "externalAuth": [
     {
-      "id": "outlook",
+      "id": "microsoft",
       "type": "oauth2",
       "oauth": {
-        "authorizeUrl": "https://example.com/oauth/authorize",
-        "tokenUrl": "https://example.com/oauth/token",
-        "scopes": ["read", "write"]
+        "authorizeUrl": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+        "tokenUrl": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        "scopes": [
+          "offline_access",
+          "Calendars.ReadWrite"
+        ],
+        "pkce": true,
+        "authorizationParams": {
+          "prompt": "select_account"
+        },
+        "refreshParams": {
+          "scope": "offline_access Calendars.ReadWrite"
+        }
       }
     }
   ],
@@ -23,28 +46,34 @@
       "syncDirection": {
         "type": "string",
         "title": "Sync Direction",
-        "enum": ["bidirectional", "timesheet-to-external", "external-to-timesheet"],
+        "enum": [
+          "bidirectional",
+          "timesheet-to-outlook",
+          "outlook-to-timesheet"
+        ],
         "default": "bidirectional",
         "x-ui-widget": "radio"
       }
     },
-    "required": ["syncDirection"]
+    "required": [
+      "syncDirection"
+    ]
   },
   "mappingSchema": {
     "system": "outlook-calendar",
     "mappings": [
       {
         "id": "projects",
-        "title": "Project Mapping",
-        "description": "Map Timesheet projects to Outlook Calendar Sync projects",
+        "title": "Calendar Mapping",
+        "description": "Map Timesheet projects to Outlook calendars",
         "localEntity": {
           "type": "project",
           "label": "Timesheet Project",
           "display": "{{title}}"
         },
         "externalEntity": {
-          "type": "project",
-          "label": "Outlook Calendar Sync Project",
+          "type": "calendar",
+          "label": "Outlook Calendar",
           "fetchAction": "list-external-projects"
         },
         "required": true,
@@ -54,35 +83,53 @@
   },
   "triggers": [
     {
-      "id": "task-created",
+      "id": "task-changed",
       "type": "event",
-      "name": "Task Created",
-      "description": "Sync when a new task is created",
-      "events": ["task.create"],
-      "configurable": true
+      "mode": "sync",
+      "name": "Task Changed",
+      "description": "Sync task create/update/delete events to Outlook Calendar",
+      "events": [
+        "task.create",
+        "task.update",
+        "task.delete"
+      ],
+      "configurable": true,
+      "actionId": "handle-sync-batch"
     },
     {
       "id": "integration-webhook",
       "type": "webhook",
-      "name": "Outlook Calendar Sync Webhook",
-      "description": "Receive inbound changes from Outlook Calendar Sync",
+      "name": "Outlook Calendar Notifications",
+      "description": "Receive change notifications from Microsoft Graph",
       "configurable": false,
-      "webhook": {
-        "signature": {
-          "header": "x-timesheet-signature",
-          "algorithm": "hmac-sha256",
-          "secretConfigKey": "webhookSecret"
-        }
-      }
+      "actionId": "handle-webhook",
+      "webhook": {}
     },
     {
       "id": "full-sync",
       "type": "schedule",
+      "mode": "sync",
       "name": "Scheduled Full Sync",
-      "description": "Run background synchronization",
+      "description": "Catch up on task changes for all mapped calendars",
       "schedule": "0 2 * * *",
       "timezone": "UTC",
-      "configurable": true
+      "configurable": true,
+      "events": [
+        "task.create",
+        "task.update",
+        "task.delete"
+      ],
+      "actionId": "handle-sync-batch"
+    },
+    {
+      "id": "subscription-renewal",
+      "type": "schedule",
+      "name": "Subscription Renewal",
+      "description": "Keep Outlook change notifications alive and catch up on missed changes",
+      "schedule": "0 3 * * *",
+      "timezone": "UTC",
+      "configurable": false,
+      "actionId": "renew-subscriptions"
     },
     {
       "id": "manual-sync",
@@ -92,19 +139,26 @@
       "userAction": {
         "label": "Sync Now",
         "placement": "settings"
-      }
+      },
+      "actionId": "run-full-sync"
     }
   ],
   "actions": [
     {
       "id": "sync-task-to-external",
-      "name": "Sync task to Outlook Calendar Sync",
+      "name": "Sync task to Outlook Calendar",
       "handler": "syncTaskToExternal"
     },
     {
+      "id": "handle-sync-batch",
+      "name": "Handle sync batch",
+      "handler": "handleSyncBatch"
+    },
+    {
       "id": "sync-task-from-external",
-      "name": "Sync task from Outlook Calendar Sync",
-      "handler": "syncTaskFromExternal"
+      "name": "Sync tasks from Outlook Calendar",
+      "handler": "syncTaskFromExternal",
+      "internal": true
     },
     {
       "id": "handle-webhook",
@@ -115,6 +169,12 @@
       "id": "run-full-sync",
       "name": "Run full sync",
       "handler": "runFullSync"
+    },
+    {
+      "id": "renew-subscriptions",
+      "name": "Renew subscriptions",
+      "handler": "renewSubscriptions",
+      "internal": true
     },
     {
       "id": "test-connection",
@@ -134,6 +194,21 @@
       "icon": "chart-bar",
       "layout": "dashboard",
       "widgets": [
+        {
+          "id": "last-sync",
+          "type": "metric",
+          "title": "Last Sync"
+        },
+        {
+          "id": "sync-stats",
+          "type": "metric",
+          "title": "Sync Statistics"
+        },
+        {
+          "id": "connection-health",
+          "type": "metric",
+          "title": "Connection Health"
+        },
         {
           "id": "manual-sync-btn",
           "type": "action_button",
