@@ -32,7 +32,7 @@ OAuth 2.0 against the Microsoft identity platform `common` endpoints (any tenant
 ## Triggers
 
 - **Task Changed** (event, sync mode): syncs task create, update, and delete events to Outlook.
-- **Outlook Calendar Notifications** (webhook): Microsoft Graph change notifications.
+- **Outlook Calendar Notifications** (webhook): Microsoft Graph change notifications. `coalesce: true` makes a burst of notifications join a run that is still queued, so a busy mailbox stays under the installation's execution rate limit.
 - **Scheduled Full Sync** (daily at 02:00 UTC): catches up on task changes.
 - **Subscription Renewal** (daily at 03:00 UTC): renews the subscription inside 48 hours of its expiry (Graph allows at most 10,080 minutes) and reads the change feeds once, which picks up missed notifications and calendars shared with the user.
 - **Manual Sync** (user action): reads the change feeds and sets up the subscription. `{ "fullResync": true }` starts the feeds over.
