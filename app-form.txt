@@ -261,7 +261,7 @@ Package Version
 1.0.0
 
 Package Integrity
-(fill in after the npm publish)
+sha512-tjKu9CXKdTOzA0nqcmSdKO05BWz4uzKQWKSsn24pn5PIIuda6EuIZ5NhHmC7ghrQH97W2iKMyb8uQ6zo+W3VIg==
 
 
 ================================================================================
@@ -305,7 +305,7 @@ Package Version
 1.1.0
 
 Package Integrity
-(fill in after the npm publish: npm view @timesheet/plugin-outlook-calendar@1.1.0 dist.integrity)
+sha512-RX3AcJzr6etmABSb74TlNQKuKmtKW2aYmiCInSFeKGg/DygtBe7+mFy8vAPOR+2ZXMBMF9C3E2xaLMzloviNyQ==
 
 Client-ID
 Application (client) ID of the multi-tenant Microsoft Entra app
@@ -314,7 +314,8 @@ Client-Secret
 Client secret value of the same Entra app (expires after at most 24 months)
 
 Notes
-  Edit the existing row f47ac10b58cc4372a5670e02b2c3d479 instead of creating a new one.
+  Edit the existing row a760bb6a65e04cdc9c75679e71f365cc instead of creating a new one
+  (f47ac10b58cc4372a5670e02b2c3d479 is an old legacy entry).
   Install Scope stays PROFILE_ONLY: the plugin reads one person's calendar with that person's
   Microsoft login, so an organization-wide install would expose someone's calendar.
   Icon URL returns 404 until the landing deploy that adds the Outlook icon. Bild stays empty: the
