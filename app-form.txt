@@ -278,7 +278,7 @@ Slug
 outlook-calendar-sync
 
 Version
-1.1.0
+1.1.1
 
 Category
 calendar
@@ -302,10 +302,10 @@ NPM Package Source
 @timesheet/plugin-outlook-calendar
 
 Package Version
-1.1.0
+1.1.1
 
 Package Integrity
-sha512-RX3AcJzr6etmABSb74TlNQKuKmtKW2aYmiCInSFeKGg/DygtBe7+mFy8vAPOR+2ZXMBMF9C3E2xaLMzloviNyQ==
+sha512-6IXwd6ZfAyjhHzdAJ0Xl8G/6gu/PLFkN/EJdokQp9rDgzYgarXw9aWdEkUJoMW6bUJYt2LTRqwjraSJScu4WCw==
 
 Client-ID
 Application (client) ID of the multi-tenant Microsoft Entra app
