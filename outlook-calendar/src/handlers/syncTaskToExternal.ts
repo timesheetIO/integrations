@@ -1,19 +1,15 @@
-import { defineHandler, TaskCreatedInput } from '@timesheet/integration-sdk';
+import { defineHandler } from '@timesheet/integration-sdk';
+import { OutlookCalendarConfig, OutlookCalendarSyncInput } from '../lib/types';
+import { OutlookCalendarSyncResult, syncTaskToOutlook } from '../lib/taskSync';
 
-const SYSTEM = 'outlook-calendar';
-
-export const syncTaskToExternal = defineHandler<TaskCreatedInput, { system: string; taskId: string; direction: string }>(
+export const syncTaskToExternal = defineHandler<OutlookCalendarSyncInput, OutlookCalendarSyncResult, OutlookCalendarConfig>(
   async (input, context) => {
-    context.logger.info('Syncing task to external system', {
-      system: SYSTEM,
-      taskId: input.taskId,
-      installationId: context.installationId
+    context.logger.info('Syncing task to Outlook Calendar', {
+      installationId: context.installationId,
+      taskId: input?.taskId ?? input?.item?.id,
+      event: input?.event
     });
 
-    return {
-      system: SYSTEM,
-      taskId: input.taskId,
-      direction: 'timesheet-to-external'
-    };
+    return await syncTaskToOutlook(input, context);
   }
 );

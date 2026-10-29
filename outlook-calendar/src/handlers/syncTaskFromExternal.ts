@@ -1,18 +1,13 @@
-import { defineHandler, WebhookInput } from '@timesheet/integration-sdk';
+import { defineHandler } from '@timesheet/integration-sdk';
+import { OutlookCalendarConfig, OutlookCalendarSyncInput } from '../lib/types';
+import { OutlookCalendarSyncResult, handleOutlookNotifications } from '../lib/taskSync';
 
-const SYSTEM = 'outlook-calendar';
-
-export const syncTaskFromExternal = defineHandler<WebhookInput, { system: string; accepted: boolean }>(
+export const syncTaskFromExternal = defineHandler<OutlookCalendarSyncInput, OutlookCalendarSyncResult, OutlookCalendarConfig>(
   async (input, context) => {
-    context.logger.info('Syncing task from external payload', {
-      system: SYSTEM,
-      method: input.method,
+    context.logger.info('Syncing tasks from an Outlook Calendar payload', {
       installationId: context.installationId
     });
 
-    return {
-      system: SYSTEM,
-      accepted: true
-    };
+    return await handleOutlookNotifications(input, context);
   }
 );

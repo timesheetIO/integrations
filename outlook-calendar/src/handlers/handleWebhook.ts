@@ -1,18 +1,13 @@
-import { defineHandler, WebhookInput } from '@timesheet/integration-sdk';
+import { defineHandler } from '@timesheet/integration-sdk';
+import { OutlookCalendarConfig, OutlookCalendarSyncInput } from '../lib/types';
+import { OutlookCalendarSyncResult, handleOutlookNotifications } from '../lib/taskSync';
 
-const SYSTEM = 'outlook-calendar';
-
-export const handleWebhook = defineHandler<WebhookInput, { system: string; handled: boolean }>(
+export const handleWebhook = defineHandler<OutlookCalendarSyncInput, OutlookCalendarSyncResult, OutlookCalendarConfig>(
   async (input, context) => {
-    context.logger.info('Handling webhook', {
-      system: SYSTEM,
-      method: input.method,
+    context.logger.info('Handling Outlook Calendar notifications', {
       installationId: context.installationId
     });
 
-    return {
-      system: SYSTEM,
-      handled: true
-    };
+    return await handleOutlookNotifications(input, context);
   }
 );

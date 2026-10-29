@@ -1,17 +1,16 @@
 import { defineHandler } from '@timesheet/integration-sdk';
+import { OutlookCalendarConfig } from '../lib/types';
+import { createClient } from '../lib/taskSync';
 
 const SYSTEM = 'outlook-calendar';
 
-export const testConnection = defineHandler<void, { system: string; ok: boolean; installationId: string }>(
+export const testConnection = defineHandler<void, { system: string; ok: boolean; installationId: string }, OutlookCalendarConfig>(
   async (_input, context) => {
-    context.logger.info('Testing integration connection', {
-      system: SYSTEM,
-      installationId: context.installationId
-    });
+    const ok = await createClient(context).testConnection();
 
     return {
       system: SYSTEM,
-      ok: true,
+      ok,
       installationId: context.installationId
     };
   }

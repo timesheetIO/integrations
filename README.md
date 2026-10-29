@@ -16,7 +16,7 @@ This folder contains first-party plugin packages for the sandboxed plugin runtim
 | [Google Health](google-health/README.md) | `@timesheet/plugin-google-health` | wellness | Import Google Health workouts as time entries (read-only). |
 | [monday.com](monday/README.md) | `@timesheet/plugin-monday` | project-management | Sync tasks and todos with monday.com. |
 | [Notion](notion/README.md) | `@timesheet/plugin-notion` | project-management | Sync todos and time entries with Notion databases. |
-| [Outlook Calendar](outlook-calendar/README.md) | `@timesheet/plugin-outlook-calendar` | calendar | Sync with Outlook calendar (scaffold, not yet functional). |
+| [Outlook Calendar](outlook-calendar/README.md) | `@timesheet/plugin-outlook-calendar` | calendar | Sync tasks with Outlook Calendar events (Microsoft 365 and Outlook.com). |
 | [QuickBooks](quickbooks/README.md) | `@timesheet/plugin-quickbooks` | accounting | Sync tasks with QuickBooks Online TimeActivity. |
 | [Timesheet for SAP® solutions](sap-solutions/README.md) | `@timesheet/plugin-sap-solutions` | accounting | Export worked time and absences as import files for SAP SuccessFactors® and the Cross-Application Time Sheet (CATS) in SAP S/4HANA®, organization or personal installs. |
 | [Xero](xero/README.md) | `@timesheet/plugin-xero` | accounting | Sync with Xero (scaffold, not yet functional). |

@@ -262,3 +262,62 @@ Package Version
 
 Package Integrity
 (fill in after the npm publish)
+
+
+================================================================================
+OUTLOOK CALENDAR
+================================================================================
+
+Integration Type
+Plugin Integration
+
+Name
+Outlook Calendar Sync
+
+Slug
+outlook-calendar-sync
+
+Version
+1.1.0
+
+Category
+calendar
+
+Tags
+sync,timesheet,outlook-calendar,outlook,microsoft-365,calendar
+
+Beschreibung
+Bidirectional synchronization between Timesheet tasks and Microsoft Outlook calendar events, for Microsoft 365 work or school accounts and personal Outlook.com accounts. Each Timesheet project maps to an Outlook calendar. Time entries appear as events titled with the project name, with the task description in the event body; events created in Outlook become time entries, with the event subject as the description. Changes, cancellations and deletions flow both ways: Microsoft Graph change notifications bring Outlook edits in, and a daily pass catches up anything that was missed. Events that ended more than 12 months ago are not imported. In many work or school organizations, a Microsoft 365 administrator has to approve Timesheet once before members can connect. Microsoft and Outlook are trademarks of the Microsoft group of companies.
+
+Bild
+(leave empty)
+
+Icon URL
+https://timesheet.io/img/integrations/icons/outlook-calendar.png
+
+Install Scope
+PROFILE_ONLY
+
+NPM Package Source
+@timesheet/plugin-outlook-calendar
+
+Package Version
+1.1.0
+
+Package Integrity
+(fill in after the npm publish: npm view @timesheet/plugin-outlook-calendar@1.1.0 dist.integrity)
+
+Client-ID
+Application (client) ID of the multi-tenant Microsoft Entra app
+
+Client-Secret
+Client secret value of the same Entra app (expires after at most 24 months)
+
+Notes
+  Edit the existing row f47ac10b58cc4372a5670e02b2c3d479 instead of creating a new one.
+  Install Scope stays PROFILE_ONLY: the plugin reads one person's calendar with that person's
+  Microsoft login, so an organization-wide install would expose someone's calendar.
+  Icon URL returns 404 until the landing deploy that adds the Outlook icon. Bild stays empty: the
+  landing shows Outlook under the Microsoft 365 logo, and Microsoft's partner guidelines rule out a
+  wide icon-plus-name logo for the app icon.
+  Entra app registration, admin consent and first live checks: backend/doc/integration/outlook.md.
