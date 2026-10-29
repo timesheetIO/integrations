@@ -1,7 +1,7 @@
 {
   "id": "outlook-calendar-sync",
   "name": "Outlook Calendar Sync",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Synchronize Timesheet tasks with Outlook Calendar",
   "longDescription": "Bidirectional synchronization between Timesheet tasks and Microsoft Outlook calendar events, for Microsoft 365 work or school accounts and personal Outlook.com accounts. Each Timesheet project maps to an Outlook calendar. Time entries appear as events titled with the project name, with the task description in the event body; events created in Outlook become time entries, with the event subject as the description. Changes, cancellations and deletions flow both ways: Microsoft Graph change notifications bring Outlook edits in, and a daily pass catches up anything that was missed. Events that ended more than 12 months ago are not imported. In many work or school organizations, a Microsoft 365 administrator has to approve Timesheet once before members can connect. Microsoft and Outlook are trademarks of the Microsoft group of companies.",
   "icon": "outlook-calendar",

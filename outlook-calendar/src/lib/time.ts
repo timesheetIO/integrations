@@ -1,4 +1,5 @@
 import { OutlookDateTimeTimeZone } from './types';
+import { IANA_TO_WINDOWS } from './windowsZones';
 
 /**
  * Graph sends event times as a wall clock without an offset plus a time zone
@@ -43,14 +44,24 @@ export function formatInZone(epochMs: number, timeZone: string | undefined): str
   return `${wall}${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
 }
 
-/** A Timesheet date time as the UTC wall clock Graph accepts on create and update. */
-export function toGraphDateTime(value: string | undefined): OutlookDateTimeTimeZone | null {
+/**
+ * A Timesheet date time for Graph create and update: the wall clock in the
+ * user's time zone under its Windows id, so Outlook shows and edits the event
+ * in that zone. UTC when the zone has no Windows id or cannot be converted.
+ */
+export function toGraphDateTime(value: string | undefined, timeZone?: string): OutlookDateTimeTimeZone | null {
   if (!value) {
     return null;
   }
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)) {
     return null;
+  }
+  const windowsZone = timeZone ? IANA_TO_WINDOWS[timeZone] : undefined;
+  const seconds = Math.floor(parsed / 1000) * 1000;
+  const offset = windowsZone && timeZone ? zoneOffsetMinutes(seconds, timeZone) : null;
+  if (windowsZone && offset !== null) {
+    return { dateTime: new Date(seconds + offset * 60_000).toISOString().slice(0, 19), timeZone: windowsZone };
   }
   return { dateTime: new Date(parsed).toISOString().slice(0, 19), timeZone: 'UTC' };
 }

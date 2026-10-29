@@ -95,6 +95,8 @@ type Context = IntegrationContext<OutlookCalendarConfig>;
 
 // One client per execution, so the access token is fetched once per run.
 const clients = new WeakMap<object, OutlookCalendarClient>();
+// The user's Timesheet time zone, read once per run.
+const timeZones = new WeakMap<object, Promise<string | undefined>>();
 
 export function allowsOutbound(context: Context): boolean {
   const direction = context.config?.syncDirection ?? 'bidirectional';
@@ -175,9 +177,10 @@ export async function syncTaskToOutlook(
   const storedOrigin = readMappingOrigin(taskMapping);
   const payloadOrigin = taskMapping?.externalId ? storedOrigin : ORIGIN_TIMESHEET;
 
+  const timeZone = await userTimeZone(context);
   let payload: Record<string, unknown>;
   try {
-    payload = buildEventPayload(task, payloadOrigin);
+    payload = buildEventPayload(task, payloadOrigin, timeZone);
   } catch (err) {
     context.logger.warn('Failed to build event payload', { taskId: task.id, error: String(err) });
     return { ...skipped('invalid-task-data'), details: { reason: 'invalid-task-data', taskId: task.id } };
@@ -232,9 +235,10 @@ export async function syncTaskToOutlook(
   };
 }
 
-function buildEventPayload(task: TaskDto, origin?: string): Record<string, unknown> {
-  const start = toGraphDateTime(task.startDateTime);
-  const end = toGraphDateTime(task.endDateTime);
+function buildEventPayload(task: TaskDto, origin?: string, timeZone?: string): Record<string, unknown> {
+  // Written in the user's zone so Outlook shows and edits the event in it, not in UTC.
+  const start = toGraphDateTime(task.startDateTime, timeZone);
+  const end = toGraphDateTime(task.endDateTime, timeZone);
   if (!start || !end) {
     throw new Error(`Task ${task.id} is missing start or end datetime.`);
   }
@@ -379,7 +383,7 @@ async function loadInboundContext(
     client: createClient(context),
     caches,
     calendars,
-    timeZone: calendars.length > 0 ? await loadUserTimeZone(context) : undefined
+    timeZone: calendars.length > 0 ? await userTimeZone(context) : undefined
   };
 }
 
@@ -621,6 +625,15 @@ async function deleteMappedTask(context: Context, mapping: MappingRecord, caches
   await context.data.deleteTask(mapping.localId);
   await context.mappings.delete({ system: SYSTEM, entity: TASK_ENTITY, localId: mapping.localId });
   removeTaskMappingFromCaches(caches, mapping);
+}
+
+function userTimeZone(context: Context): Promise<string | undefined> {
+  let timeZone = timeZones.get(context);
+  if (!timeZone) {
+    timeZone = loadUserTimeZone(context);
+    timeZones.set(context, timeZone);
+  }
+  return timeZone;
 }
 
 async function loadUserTimeZone(context: Context): Promise<string | undefined> {
