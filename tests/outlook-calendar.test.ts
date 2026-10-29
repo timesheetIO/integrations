@@ -217,8 +217,18 @@ describe('outlook-calendar time conversion', () => {
     expect(formatInZone(Date.parse('2026-07-01T08:00:00Z'), undefined)).toBe('2026-07-01T08:00:00+00:00');
   });
 
-  it('sends task times to Graph as UTC', () => {
+  it('sends task times in the user zone under its Windows id', () => {
+    expect(toGraphDateTime('2026-07-01T10:00:00+02:00', 'Europe/Vienna'))
+      .toEqual({ dateTime: '2026-07-01T10:00:00', timeZone: 'W. Europe Standard Time' });
+    expect(toGraphDateTime('2026-01-15T09:00:00+01:00', 'Europe/Vienna'))
+      .toEqual({ dateTime: '2026-01-15T09:00:00', timeZone: 'W. Europe Standard Time' });
+    expect(toGraphDateTime('2026-01-15T09:00:00+01:00', 'America/New_York'))
+      .toEqual({ dateTime: '2026-01-15T03:00:00', timeZone: 'Eastern Standard Time' });
+  });
+
+  it('falls back to UTC without a known zone', () => {
     expect(toGraphDateTime('2026-07-01T10:00:00+02:00')).toEqual({ dateTime: '2026-07-01T08:00:00', timeZone: 'UTC' });
+    expect(toGraphDateTime('2026-07-01T10:00:00+02:00', 'Mars/Base')).toEqual({ dateTime: '2026-07-01T08:00:00', timeZone: 'UTC' });
   });
 });
 
@@ -239,8 +249,8 @@ describe('outlook-calendar Timesheet to Outlook', () => {
     const created = calls[1].body!;
     expect(created.subject).toBe('Client Work - Acme');
     expect(created.body).toEqual({ contentType: 'text', content: 'Design review' });
-    expect(created.start).toEqual({ dateTime: '2026-07-01T08:00:00', timeZone: 'UTC' });
-    expect(created.end).toEqual({ dateTime: '2026-07-01T09:30:00', timeZone: 'UTC' });
+    expect(created.start).toEqual({ dateTime: '2026-07-01T10:00:00', timeZone: 'W. Europe Standard Time' });
+    expect(created.end).toEqual({ dateTime: '2026-07-01T11:30:00', timeZone: 'W. Europe Standard Time' });
     expect(created.singleValueExtendedProperties).toEqual([{ id: TIMESHEET_ID_PROPERTY, value: 'task-1' }]);
     expect(calls[1].headers.Prefer).toContain('IdType="ImmutableId"');
     expect(mappings.upsert).toHaveBeenCalledWith(expect.objectContaining({
