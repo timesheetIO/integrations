@@ -357,8 +357,8 @@ describe('notion plugin', () => {
     expect(body.properties).toEqual({
       Entry: { title: [{ type: 'text', text: { content: 'Consulting' } }] },
       When: { date: { start: '2026-02-20T10:00:00.000Z', end: '2026-02-20T11:00:00.000Z' } },
-      // 3600s tracked minus a 600s break = 3000s = 0.83h.
-      Hours: { number: 0.83 },
+      // 3600s tracked = 1h; the 600s break is not subtracted.
+      Hours: { number: 1 },
       Task: { relation: [{ id: 'page-todo-1' }] }
     });
     expect(upsert).toHaveBeenCalledWith(
@@ -524,7 +524,31 @@ describe('notion plugin', () => {
     const result = await handleWebhook({ body: { verification_token: 'vt-1' } }, context);
 
     expect(result.status).toBe('handshake');
-    expect(context.state.set).toHaveBeenCalledWith('notion:webhook-secret', 'vt-1');
+    expect(context.state.set).toHaveBeenCalledWith('notion:webhook-secret', 'vt-1', { ifAbsent: true });
+  });
+
+  it('refuses a handshake that would replace the stored verification token', async () => {
+    installFetch();
+    const state = { get: jest.fn().mockResolvedValue('vt-1'), set: jest.fn(), delete: jest.fn() };
+    const context = {
+      userId: 'user-1',
+      installationId: 'installation-1',
+      config: {},
+      data: {},
+      credentials: baseCredentials(),
+      mappings: { get: jest.fn(), findByExternal: jest.fn(), list: jest.fn(), upsert: jest.fn(), delete: jest.fn() },
+      state,
+      logger: baseLogger()
+    } as unknown as IntegrationContext;
+
+    const forged = await handleWebhook({ body: { verification_token: 'attacker' } }, context);
+    expect(forged.status).toBe('rejected');
+    expect(forged.details).toEqual({ reason: 'secret-already-set' });
+
+    // Notion repeating the token it already delivered is still a valid handshake.
+    const repeated = await handleWebhook({ body: { verification_token: 'vt-1' } }, context);
+    expect(repeated.status).toBe('handshake');
+    expect(state.set).not.toHaveBeenCalled();
   });
 
   it('deletes the local todo on a page.deleted webhook event', async () => {

@@ -1,4 +1,6 @@
 import { IntegrationContext, MappingRecord, TaskDto } from '@timesheet/integration-sdk';
+import { handleWebhook } from '../freshbooks/src/handlers/handleWebhook';
+import { registerWebhooks } from '../freshbooks/src/handlers/registerWebhooks';
 import { runFullSync } from '../freshbooks/src/handlers/runFullSync';
 import { syncTaskToExternal } from '../freshbooks/src/handlers/syncTaskToExternal';
 import { resetSharedClient } from '../freshbooks/src/lib/taskSync';
@@ -172,7 +174,7 @@ describe('freshbooks plugin', () => {
     );
   });
 
-  it('subtracts break time from the reported duration', async () => {
+  it('sends the full duration, breaks included', async () => {
     const fetchMock = installFetch();
     const task: TaskDto = { ...baseTask, duration: 3600, durationBreak: 600 };
 
@@ -205,8 +207,8 @@ describe('freshbooks plugin', () => {
     const body = JSON.parse(String((postCall as [unknown, RequestInit])[1].body)) as {
       time_entry: Record<string, unknown>;
     };
-    // 3600s tracked minus a 600s break = 3000s billable.
-    expect(body.time_entry.duration).toBe(3000);
+    // 3600s tracked; the 600s break is not subtracted.
+    expect(body.time_entry.duration).toBe(3600);
   });
 
   it('skips echoing a task change that was just imported from FreshBooks', async () => {
@@ -420,5 +422,147 @@ describe('freshbooks plugin', () => {
     expect(result.status).toBe('completed');
     expect(result.syncedCount).toBe(0);
     expect(updateTask).not.toHaveBeenCalled();
+  });
+});
+
+describe('freshbooks webhook handshake', () => {
+  const WEBHOOK_URL = 'https://worker.example/hooks/integration/endpoint-1';
+  const REAL_VERIFIER = 'real-verifier';
+
+  beforeEach(() => {
+    jest.restoreAllMocks();
+    resetSharedClient();
+  });
+
+  // A FreshBooks account whose callbacks behave like the real API: a callback
+  // turns verified only when its own verifier is echoed back.
+  const installCallbacks = (callbacks: Array<{ callbackid: number; uri: string; event: string; verified: boolean }>) => {
+    const fetchMock = jest.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const requestUrl = String(url);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (requestUrl.includes('/auth/api/v1/users/me')) {
+        return createFetchResponse(ME_RESPONSE);
+      }
+      const match = requestUrl.match(/\/events\/callbacks(?:\/(\d+))?/);
+      if (match) {
+        const callback = callbacks.find((item) => String(item.callbackid) === match[1]);
+        if (method === 'GET') {
+          return createFetchResponse({ response: { result: { callbacks } } });
+        }
+        if (method === 'POST') {
+          const created = { callbackid: 900, uri: WEBHOOK_URL, event: 'time_entry', verified: false };
+          callbacks.push(created);
+          return createFetchResponse({ response: { result: { callback: created } } });
+        }
+        if (method === 'DELETE' && callback) {
+          callbacks.splice(callbacks.indexOf(callback), 1);
+          return createFetchResponse(null, 204);
+        }
+        if (method === 'PUT' && callback) {
+          const body = JSON.parse(String(init?.body)) as { callback: { verifier?: string; resend?: boolean } };
+          if (body.callback.resend) {
+            return createFetchResponse({ response: { result: { callback } } });
+          }
+          if (body.callback.verifier !== REAL_VERIFIER) {
+            return createFetchResponse({ response: { errors: [{ message: 'Invalid verifier' }] } }, 422);
+          }
+          callback.verified = true;
+          return createFetchResponse({ response: { result: { callback } } });
+        }
+        return createFetchResponse({}, 404);
+      }
+      return createFetchResponse({});
+    });
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock as unknown as typeof fetch;
+    return fetchMock;
+  };
+
+  const webhookContext = (stored: { callbackId: string; verifier: string } | null = null) =>
+    ({
+      userId: 'user-1',
+      installationId: 'installation-1',
+      config: {},
+      metadata: { webhooks: { 'integration-webhook': WEBHOOK_URL } },
+      data: { deleteTask: jest.fn() },
+      credentials: baseCredentials(),
+      mappings: { get: jest.fn(), findByExternal: jest.fn(), list: jest.fn(), upsert: jest.fn(), delete: jest.fn() },
+      state: { get: jest.fn().mockResolvedValue(stored), set: jest.fn(), delete: jest.fn() },
+      logger: baseLogger()
+    } as unknown as IntegrationContext);
+
+  const callsWith = (fetchMock: jest.Mock, method: string) =>
+    fetchMock.mock.calls.filter(
+      ([reqUrl, init]) => String(reqUrl).includes('/events/callbacks') && (init?.method ?? 'GET') === method
+    );
+
+  it('stores the verifier once FreshBooks has confirmed it', async () => {
+    installCallbacks([{ callbackid: 77, uri: WEBHOOK_URL, event: 'time_entry', verified: false }]);
+    const context = webhookContext();
+
+    const result = await handleWebhook({ body: { verifier: REAL_VERIFIER, object_id: 77 } }, context);
+
+    expect(result.status).toBe('handshake');
+    expect(context.state.set).toHaveBeenCalledWith('freshbooks:webhook', { callbackId: '77', verifier: REAL_VERIFIER });
+  });
+
+  it('does not store a verifier FreshBooks refuses', async () => {
+    installCallbacks([{ callbackid: 77, uri: WEBHOOK_URL, event: 'time_entry', verified: false }]);
+    const context = webhookContext();
+
+    const result = await handleWebhook({ body: { verifier: 'attacker', object_id: 77 } }, context);
+
+    expect(result.status).toBe('rejected');
+    expect(result.details).toEqual({ reason: 'verifier-not-accepted', callbackId: '77' });
+    expect(context.state.set).not.toHaveBeenCalled();
+  });
+
+  it('does not replace the verifier of a callback that is already verified', async () => {
+    const fetchMock = installCallbacks([{ callbackid: 77, uri: WEBHOOK_URL, event: 'time_entry', verified: true }]);
+    const context = webhookContext({ callbackId: '77', verifier: REAL_VERIFIER });
+
+    const result = await handleWebhook({ body: { verifier: 'attacker', object_id: 77 } }, context);
+
+    expect(result.status).toBe('rejected');
+    expect(result.details).toEqual({ reason: 'callback-already-verified', callbackId: '77' });
+    expect(callsWith(fetchMock, 'PUT')).toHaveLength(0);
+    expect(context.state.set).not.toHaveBeenCalled();
+  });
+
+  it('rejects a handshake for a callback the account does not have', async () => {
+    installCallbacks([]);
+    const context = webhookContext();
+
+    const result = await handleWebhook({ body: { verifier: 'attacker', object_id: 5 } }, context);
+
+    expect(result.status).toBe('rejected');
+    expect(result.details).toEqual({ reason: 'unknown-callback', callbackId: '5' });
+    expect(context.state.set).not.toHaveBeenCalled();
+  });
+
+  it('asks for the verifier again when the registered callback is unverified', async () => {
+    const fetchMock = installCallbacks([{ callbackid: 77, uri: WEBHOOK_URL, event: 'time_entry', verified: false }]);
+
+    const result = await registerWebhooks(undefined, webhookContext());
+
+    expect(result.details).toEqual({ reason: 'verification-resent', callbackId: '77' });
+    expect(callsWith(fetchMock, 'POST')).toHaveLength(0);
+  });
+
+  it('replaces a verified callback whose verifier is not stored', async () => {
+    const fetchMock = installCallbacks([{ callbackid: 77, uri: WEBHOOK_URL, event: 'time_entry', verified: true }]);
+
+    const result = await registerWebhooks(undefined, webhookContext());
+
+    expect(callsWith(fetchMock, 'DELETE')).toHaveLength(1);
+    expect(result.details).toEqual({ callbackId: 900, uri: WEBHOOK_URL });
+  });
+
+  it('keeps a verified callback whose verifier is stored', async () => {
+    const fetchMock = installCallbacks([{ callbackid: 77, uri: WEBHOOK_URL, event: 'time_entry', verified: true }]);
+
+    const result = await registerWebhooks(undefined, webhookContext({ callbackId: '77', verifier: REAL_VERIFIER }));
+
+    expect(result.details).toEqual({ reason: 'already-registered' });
+    expect(callsWith(fetchMock, 'DELETE')).toHaveLength(0);
   });
 });

@@ -292,6 +292,57 @@ export async function runFreshBooksFullSync(
   };
 }
 
+// The handshake carries no signature, so the verifier is trusted only after
+// FreshBooks vouches for it: the callback must belong to this account, still be
+// unverified, and turn verified when the verifier is echoed back. Storing an
+// unconfirmed verifier would let anyone who learns the endpoint URL install
+// their own HMAC secret and sign forged events.
+async function acceptFreshBooksVerifier(
+  context: IntegrationContext<FreshBooksConfig>,
+  callbackId: string,
+  verifier: string
+): Promise<FreshBooksSyncResult> {
+  const reject = (reason: string): FreshBooksSyncResult => {
+    context.logger.warn('FreshBooks webhook handshake rejected', { callbackId, reason });
+    return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason, callbackId } };
+  };
+
+  const stored = (await context.state.get<StoredWebhookState>(WEBHOOK_STATE_KEY)) ?? undefined;
+  if (stored?.callbackId === callbackId && stored.verifier === verifier) {
+    return { system: SYSTEM, status: 'handshake', syncedCount: 0, details: { callbackId } };
+  }
+
+  const client = getOrCreateClient(context);
+  const findCallback = async () =>
+    (await client.listCallbacks()).find((callback) => String(callback.callbackid) === callbackId);
+
+  const pending = await findCallback();
+  if (!pending) {
+    return reject('unknown-callback');
+  }
+  if (pending.verified === true) {
+    return reject('callback-already-verified');
+  }
+
+  try {
+    await client.verifyCallback(callbackId, verifier);
+  } catch (err) {
+    // FreshBooks refusing the verifier is a forged or outdated handshake; any
+    // other failure (network, auth, rate limit) must fail the run.
+    if (/failed \((400|403|404|422)\)/.test(String(err))) {
+      return reject('verifier-not-accepted');
+    }
+    throw err;
+  }
+
+  if ((await findCallback())?.verified !== true) {
+    return reject('verifier-not-accepted');
+  }
+
+  await context.state.set(WEBHOOK_STATE_KEY, { callbackId, verifier } as StoredWebhookState);
+  return { system: SYSTEM, status: 'handshake', syncedCount: 0, details: { callbackId } };
+}
+
 export async function handleFreshBooksWebhook(
   input: SyncInput,
   context: IntegrationContext<FreshBooksConfig>
@@ -299,18 +350,11 @@ export async function handleFreshBooksWebhook(
   const payload = parseWebhookPayload(input.body, getRawBody(input));
 
   // Verification handshake: on callback creation FreshBooks POSTs a `verifier`
-  // to the callback URL. Persist it (it becomes the HMAC secret) and confirm
-  // ownership by echoing it back.
+  // to the callback URL; it becomes the HMAC secret once FreshBooks confirms it.
   const verifier = readString(payload?.verifier);
   const callbackId = payload?.object_id != null ? String(payload.object_id) : undefined;
   if (verifier && callbackId) {
-    await context.state.set(WEBHOOK_STATE_KEY, { callbackId, verifier } as StoredWebhookState);
-    try {
-      await getOrCreateClient(context).verifyCallback(callbackId, verifier);
-    } catch (err) {
-      context.logger.warn('FreshBooks callback verification failed', { callbackId, error: String(err) });
-    }
-    return { system: SYSTEM, status: 'handshake', syncedCount: 0, details: { callbackId } };
+    return acceptFreshBooksVerifier(context, callbackId, verifier);
   }
 
   const syncDirection = context.config?.syncDirection ?? 'bidirectional';
@@ -521,12 +565,28 @@ export async function registerFreshBooksWebhooks(
   }
 
   const client = getOrCreateClient(context);
-  const existing = await client.listCallbacks();
-  const alreadyRegistered = existing.some(
+  const existing = (await client.listCallbacks()).find(
     (callback) => callback.uri === webhookUrl && (callback.event ?? '').startsWith('time_entry')
   );
-  if (alreadyRegistered) {
-    return { system: SYSTEM, status: 'completed', syncedCount: 0, details: { reason: 'already-registered' } };
+  if (existing?.callbackid != null) {
+    const existingId = String(existing.callbackid);
+    const stored = (await context.state.get<StoredWebhookState>(WEBHOOK_STATE_KEY)) ?? undefined;
+    if (existing.verified === true && stored?.callbackId === existingId) {
+      return { system: SYSTEM, status: 'completed', syncedCount: 0, details: { reason: 'already-registered' } };
+    }
+    if (existing.verified !== true) {
+      // The handshake never completed: have FreshBooks deliver the verifier again.
+      await client.resendCallbackVerification(existingId);
+      return {
+        system: SYSTEM,
+        status: 'completed',
+        syncedCount: 0,
+        details: { reason: 'verification-resent', callbackId: existingId }
+      };
+    }
+    // Verified, but its verifier is not held here, so its deliveries can never
+    // be authenticated: replace it.
+    await client.deleteCallback(existingId);
   }
 
   // A single `time_entry` subscription catches create/update/delete under one
@@ -696,21 +756,19 @@ function buildTimeEntryPayload(input: {
   return payload;
 }
 
-// Net worked seconds: FreshBooks bills the tracked time excluding breaks, which
-// is how `duration - durationBreak` is reported elsewhere in the platform.
+// Full tracked seconds, breaks included: the batch item carries no break total,
+// and every path must report the same figure.
 function computeDurationSeconds(task: TaskDto): number | null {
-  const gross = Number(task.duration);
-  const breakSeconds = Number(task.durationBreak ?? 0);
-  const safeBreak = Number.isFinite(breakSeconds) && breakSeconds > 0 ? breakSeconds : 0;
+  const duration = Number(task.duration);
 
-  if (Number.isFinite(gross) && gross > 0) {
-    return Math.max(0, Math.round(gross - safeBreak));
+  if (Number.isFinite(duration) && duration > 0) {
+    return Math.round(duration);
   }
 
   const start = parseDate(task.startDateTime);
   const end = parseDate(task.endDateTime);
   if (start && end) {
-    const seconds = Math.round((end.getTime() - start.getTime()) / 1000) - safeBreak;
+    const seconds = Math.round((end.getTime() - start.getTime()) / 1000);
     return Math.max(0, seconds);
   }
   return null;

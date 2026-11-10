@@ -1,3 +1,4 @@
+import { createHmac } from 'crypto';
 import { IntegrationContext, MappingRecord } from '@timesheet/integration-sdk';
 
 import { handleWebhook as asanaWebhook } from '../asana/src/handlers/handleWebhook';
@@ -130,6 +131,16 @@ describe('asana attributes imported time', () => {
     events: [{ action: 'changed', resource: { gid: 'entry-1', resource_type: 'time_tracking_entry' } }]
   };
 
+  // The handler rejects unsigned deliveries, so the event is signed like Asana signs it.
+  const WEBHOOK_SECRET = 'asana-secret';
+  const signedDelivery = {
+    body: webhookBody,
+    rawBody: JSON.stringify(webhookBody),
+    headers: {
+      'x-hook-signature': createHmac('sha256', WEBHOOK_SECRET).update(JSON.stringify(webhookBody)).digest('hex')
+    }
+  };
+
   const routeEntry = (createdByGid: string) => (url: string) => {
     if (url.includes('/time_tracking_entries/entry-1')) {
       return {
@@ -150,9 +161,9 @@ describe('asana attributes imported time', () => {
     const createTask = jest.fn().mockResolvedValue({ id: 'task-9', user: 'user-1', lastUpdate: 1 });
 
     await asanaWebhook(
-      { body: webhookBody },
+      signedDelivery,
       buildContext(
-        {},
+        { webhookSecret: WEBHOOK_SECRET },
         mappings({
           list: (entity) => (entity === 'project' ? [projectMapping] : []),
           findByExternal: (entity) => (entity === 'todo' ? todoMapping : null)
@@ -169,9 +180,9 @@ describe('asana attributes imported time', () => {
     const createTask = jest.fn();
 
     await asanaWebhook(
-      { body: webhookBody },
+      signedDelivery,
       buildContext(
-        {},
+        { webhookSecret: WEBHOOK_SECRET },
         mappings({
           list: (entity) => (entity === 'project' ? [projectMapping] : []),
           findByExternal: (entity) => (entity === 'todo' ? todoMapping : null)

@@ -296,7 +296,7 @@ describe('basecamp timesheet entries', () => {
     expect(payload.date).toBe('2026-02-20');
   });
 
-  it('subtracts break seconds before converting to hours', async () => {
+  it('sends the full duration, breaks included', async () => {
     const fetchMock = installFetch((url) => {
       if (url.endsWith(`/projects/${BUCKET_ID}.json`)) {
         return { id: Number(BUCKET_ID), timesheet_enabled: true };
@@ -314,8 +314,8 @@ describe('basecamp timesheet entries', () => {
     );
 
     expect(result.status).toBe('synced');
-    // (5400 - 900)s = 4500s = 1.25h.
-    expect(bodyOf(callsTo(fetchMock, '/timesheet/entries.json')[0] as unknown[]).hours).toBe('1.25');
+    // 5400s tracked = 1.50h; the 900s break is not subtracted.
+    expect(bodyOf(callsTo(fetchMock, '/timesheet/entries.json')[0] as unknown[]).hours).toBe('1.50');
   });
 
   it('skips time sync when the project lacks the paid Timesheets add-on', async () => {

@@ -1,4 +1,5 @@
 import { IntegrationContext, MappingRecord, TaskDto } from '@timesheet/integration-sdk';
+import { handleWebhook } from '../asana/src/handlers/handleWebhook';
 import { syncTaskToExternal } from '../asana/src/handlers/syncTaskToExternal';
 import { resetSharedClient } from '../asana/src/lib/taskSync';
 
@@ -111,23 +112,67 @@ describe('asana duration conversion', () => {
     expect(readEntryPayload(fetchMock).duration_minutes).toBe(60);
   });
 
-  it('subtracts break seconds before converting to minutes', async () => {
+  it('sends the full duration, breaks included', async () => {
     const fetchMock = installFetch();
     const task: TaskDto = { ...baseTask, duration: 3600, durationBreak: 600 };
     const result = await syncTaskToExternal({ taskId: 'task-1' }, buildContext(task));
 
     expect(result.status).toBe('synced');
-    // (3600 - 600)s = 3000s = 50 minutes.
-    expect(readEntryPayload(fetchMock).duration_minutes).toBe(50);
+    // 3600s tracked = 60 minutes; the 600s break is not subtracted.
+    expect(readEntryPayload(fetchMock).duration_minutes).toBe(60);
   });
 
-  it('falls back to start/end and scales the break to milliseconds', async () => {
+  it('falls back to the start/end span, breaks included', async () => {
     const fetchMock = installFetch();
-    // duration 0 forces the start/end fallback branch; 1h span minus a 600s break.
+    // duration 0 forces the start/end fallback branch; the 1h span is sent in full.
     const task: TaskDto = { ...baseTask, duration: 0, durationBreak: 600 };
     const result = await syncTaskToExternal({ taskId: 'task-1' }, buildContext(task));
 
     expect(result.status).toBe('synced');
-    expect(readEntryPayload(fetchMock).duration_minutes).toBe(50);
+    expect(readEntryPayload(fetchMock).duration_minutes).toBe(60);
+  });
+});
+
+describe('asana webhook handshake', () => {
+  beforeEach(() => {
+    jest.restoreAllMocks();
+    resetSharedClient();
+  });
+
+  const webhookContext = (storedSecret: string | null) => {
+    const context = buildContext(baseTask);
+    (context.state.get as jest.Mock).mockResolvedValue(storedSecret);
+    (context.data as unknown as Record<string, unknown>).deleteTodo = jest.fn();
+    return context;
+  };
+
+  it('stores the secret of the first handshake', async () => {
+    const context = webhookContext(null);
+
+    const result = await handleWebhook({ headers: { 'x-hook-secret': 'secret-1' } }, context);
+
+    expect(result.status).toBe('handshake');
+    expect(context.state.set).toHaveBeenCalledWith('asana:webhook-secret', 'secret-1', { ifAbsent: true });
+  });
+
+  it('refuses a handshake that would replace the stored secret', async () => {
+    const context = webhookContext('secret-1');
+
+    const result = await handleWebhook({ headers: { 'x-hook-secret': 'attacker' } }, context);
+
+    expect(result.status).toBe('rejected');
+    expect(result.details).toEqual({ reason: 'secret-already-set' });
+    expect(context.state.set).not.toHaveBeenCalled();
+  });
+
+  it('rejects events while no secret is stored', async () => {
+    const context = webhookContext(null);
+    const body = { events: [{ action: 'deleted', resource: { gid: 'asana-task-1', resource_type: 'task' } }] };
+
+    const result = await handleWebhook({ headers: {}, body }, context);
+
+    expect(result.status).toBe('rejected');
+    expect(result.details).toEqual({ reason: 'not-verified' });
+    expect(context.mappings.findByExternal).not.toHaveBeenCalled();
   });
 });

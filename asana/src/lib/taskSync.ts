@@ -10,6 +10,7 @@ import {
   getLastUpdateMillis,
   isAlreadySyncedLocalChange,
   isStaleExternalChange,
+  isStateConflictError,
   releaseStateLock,
   syncMetadataStamp,
   tryAcquireStateLock
@@ -381,6 +382,28 @@ export async function runAsanaFullSync(
   };
 }
 
+const WEBHOOK_SECRET_STATE_KEY = 'asana:webhook-secret';
+
+// A handshake carries no proof of origin, so the first secret wins: a later
+// handshake may repeat the stored secret but never replace it. Otherwise anyone
+// who learns the endpoint URL could install their own secret and sign forged
+// events. Returns false when a different secret is already stored.
+async function claimWebhookSecret(context: IntegrationContext<AsanaConfig>, secret: string): Promise<boolean> {
+  const stored = await context.state.get<string>(WEBHOOK_SECRET_STATE_KEY);
+  if (stored) {
+    return stored === secret;
+  }
+  try {
+    await context.state.set(WEBHOOK_SECRET_STATE_KEY, secret, { ifAbsent: true });
+    return true;
+  } catch (err) {
+    if (isStateConflictError(err)) {
+      return (await context.state.get<string>(WEBHOOK_SECRET_STATE_KEY)) === secret;
+    }
+    throw err;
+  }
+}
+
 export async function handleAsanaWebhook(
   input: SyncInput,
   context: IntegrationContext<AsanaConfig>
@@ -390,7 +413,10 @@ export async function handleAsanaWebhook(
   // HTTP response.
   const handshakeSecret = getHeader(input, 'x-hook-secret');
   if (handshakeSecret) {
-    await context.state.set('asana:webhook-secret', handshakeSecret);
+    if (!(await claimWebhookSecret(context, handshakeSecret))) {
+      context.logger.warn('Asana webhook handshake rejected: a different secret is already stored');
+      return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason: 'secret-already-set' } };
+    }
     return { system: SYSTEM, status: 'handshake', syncedCount: 0, details: { hasSecret: true } };
   }
 
@@ -399,18 +425,20 @@ export async function handleAsanaWebhook(
     return skip({ reason: 'sync-direction-mismatch' });
   }
 
-  const storedSecret = (await context.state.get<string>('asana:webhook-secret')) ?? context.config?.webhookSecret;
+  const storedSecret = (await context.state.get<string>(WEBHOOK_SECRET_STATE_KEY)) ?? context.config?.webhookSecret;
   const signature = getHeader(input, 'x-hook-signature');
   const rawBody = getRawBody(input);
 
-  if (storedSecret) {
-    if (!signature || !rawBody) {
-      return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason: 'missing-signature-or-body' } };
-    }
-    if (!(await verifyAsanaSignature(rawBody, signature, storedSecret))) {
-      context.logger.warn('Asana webhook rejected: signature mismatch');
-      return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason: 'invalid-signature' } };
-    }
+  // Fail closed: without a secret nothing can prove the delivery came from Asana.
+  if (!storedSecret) {
+    return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason: 'not-verified' } };
+  }
+  if (!signature || !rawBody) {
+    return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason: 'missing-signature-or-body' } };
+  }
+  if (!(await verifyAsanaSignature(rawBody, signature, storedSecret))) {
+    context.logger.warn('Asana webhook rejected: signature mismatch');
+    return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason: 'invalid-signature' } };
   }
 
   const payload = parseWebhookPayload(input.body, rawBody);
@@ -945,17 +973,16 @@ function buildAsanaTaskPayloadFromTodo(todo: ToDoDto): Record<string, unknown> {
 }
 
 function computeDurationMinutes(task: TaskDto): number | null {
-  // task.duration and task.durationBreak are in seconds; Asana wants whole
-  // minutes, so net worked seconds convert with a /60 divisor.
+  // The full tracked time is sent, breaks included: the batch item carries no
+  // break total, and every path must report the same figure. task.duration is
+  // in seconds.
   if (typeof task.duration === 'number' && task.duration > 0) {
-    return Math.max(0, Math.round((task.duration - (task.durationBreak ?? 0)) / 60));
+    return Math.round(task.duration / 60);
   }
   const start = parseDate(task.startDateTime);
   const end = parseDate(task.endDateTime);
   if (!start || !end) return null;
-  // The start/end delta is milliseconds; durationBreak (seconds) is scaled to
-  // match before subtracting.
-  const ms = end.getTime() - start.getTime() - (task.durationBreak ?? 0) * 1000;
+  const ms = end.getTime() - start.getTime();
   return ms <= 0 ? 0 : Math.round(ms / 60_000);
 }
 

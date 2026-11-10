@@ -46,7 +46,7 @@ Config overrides (`statusProperty`, `dueDateProperty`) win when they name an exi
 
 ## Time entries (time-log database)
 
-With `timeLogDatabaseId` set, each Timesheet task becomes a row: title = description, date property = start/end datetime range, number property = net worked hours (`duration - durationBreak`), relation = the todo's page. Inbound edits to time-log rows flow back to the local task; rows without a relation to a synced todo page are skipped (no local project context).
+With `timeLogDatabaseId` set, each Timesheet task becomes a row: title = description, date property = start/end datetime range, number property = tracked hours (the full duration, breaks included), relation = the todo's page. Inbound edits to time-log rows flow back to the local task; rows without a relation to a synced todo page are skipped (no local project context).
 
 ## Triggers
 
@@ -57,7 +57,7 @@ With `timeLogDatabaseId` set, each Timesheet task becomes a row: title = descrip
 
 ### Webhook
 
-Notion webhook subscriptions are app-level: one URL per integration, configured in Notion's developer dashboard (not per-user via API). Deliveries carry `workspace_id`, so the backend routes each event to the installation whose credential holds that workspace (captured from the OAuth token response), the same model as the QuickBooks app-level webhook. The one-time handshake delivery carries a `verification_token`, which the handler stores as the HMAC secret; subsequent deliveries are verified against `X-Notion-Signature` (`sha256=<hex>` over the raw body).
+Notion webhook subscriptions are app-level: one URL per integration, configured in Notion's developer dashboard (not per-user via API). Deliveries carry `workspace_id`, so the backend routes each event to the installation whose credential holds that workspace (captured from the OAuth token response), the same model as the QuickBooks app-level webhook. The one-time handshake delivery carries a `verification_token`, which the handler stores as the HMAC secret. The first token wins: a later handshake with a different token is refused, so a re-created subscription is not accepted until the stored `notion:webhook-secret` state is cleared; subsequent deliveries are verified against `X-Notion-Signature` (`sha256=<hex>` over the raw body).
 
 ### Deletes and archiving
 
