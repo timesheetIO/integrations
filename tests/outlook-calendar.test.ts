@@ -320,6 +320,36 @@ describe('outlook-calendar Timesheet to Outlook', () => {
     expect(mappings.delete).toHaveBeenCalledWith({ system: 'outlook-calendar', entity: 'task', localId: 'task-1' });
   });
 
+  it('drops the mapping when the event of a deleted task sits in a read-only calendar', async () => {
+    const { context, mappings } = createContext({
+      tasks: { 'task-1': task({ deleted: true }) },
+      taskMappings: [{ localId: 'task-1', externalId: 'event-1', metadata: {}, syncStatus: 'SYNCED' }]
+    });
+    mockGraph({
+      'DELETE /me/events/event-1': () => reply(403, { error: { code: 'ErrorAccessDenied' } }),
+      'GET /me/calendars/cal-1': () => ({ canEdit: false })
+    });
+
+    const result = await syncTaskToExternal({ taskId: 'task-1' }, context);
+
+    expect(result.status).toBe('deleted');
+    expect(mappings.delete).toHaveBeenCalledWith({ system: 'outlook-calendar', entity: 'task', localId: 'task-1' });
+  });
+
+  it('keeps failing when a delete is refused in a calendar the user can edit', async () => {
+    const { context, mappings } = createContext({
+      tasks: { 'task-1': task({ deleted: true }) },
+      taskMappings: [{ localId: 'task-1', externalId: 'event-1', metadata: {}, syncStatus: 'SYNCED' }]
+    });
+    mockGraph({
+      'DELETE /me/events/event-1': () => reply(403, { error: { code: 'ErrorAccessDenied' } }),
+      'GET /me/calendars/cal-1': () => ({ canEdit: true })
+    });
+
+    await expect(syncTaskToExternal({ taskId: 'task-1' }, context)).rejects.toThrow('(403)');
+    expect(mappings.delete).not.toHaveBeenCalled();
+  });
+
   it('creates the subscription after the last sync batch', async () => {
     const { context, state } = createContext({ tasks: { 'task-1': task() } });
     const calls = mockGraph({

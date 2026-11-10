@@ -1212,6 +1212,214 @@ describe('google-calendar plugin', () => {
     expect(stateSet).toHaveBeenCalledWith('google-calendar:sync-token:calendar-1', 'fresh-token');
   });
 
+  it('does not import birthday events or events more than a year ahead', async () => {
+    const createTask = jest.fn().mockResolvedValue({ id: 'task-created', lastUpdate: Date.now() });
+    const stateSet = jest.fn();
+
+    const context = {
+      userId: 'user-1',
+      installationId: 'installation-1',
+      config: {},
+      data: {
+        createTask,
+        getTask: jest.fn(),
+        updateTask: jest.fn(),
+        deleteTask: jest.fn()
+      },
+      credentials: {
+        getAccessToken: jest.fn().mockResolvedValue('token'),
+        refreshToken: jest.fn().mockResolvedValue('token-2')
+      },
+      mappings: {
+        list: jest.fn().mockResolvedValue([{ localId: 'project-1', externalId: 'calendar-1', syncStatus: 'SYNCED', metadata: {} }]),
+        findByExternal: jest.fn().mockResolvedValue(null),
+        upsert: jest.fn(),
+        get: jest.fn(),
+        delete: jest.fn()
+      },
+      state: {
+        get: jest.fn().mockResolvedValue(null),
+        set: stateSet,
+        delete: jest.fn()
+      },
+      logger: {
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn()
+      }
+    } as unknown as IntegrationContext;
+
+    const day = 24 * 60 * 60 * 1000;
+    const nextWeek = new Date(Date.now() + 7 * day).toISOString().slice(0, 10);
+    const nextWeekEnd = new Date(Date.now() + 8 * day).toISOString().slice(0, 10);
+    const twoYearsAhead = new Date(Date.now() + 2 * 365 * day);
+    const twoYearsAheadEnd = new Date(twoYearsAhead.getTime() + 60 * 60 * 1000);
+    const fetchMock = jest.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: { forEach: () => {} },
+      json: async () => ({
+        items: [
+          {
+            id: 'birthday_20261019',
+            eventType: 'birthday',
+            summary: 'Birthday',
+            start: { date: nextWeek },
+            end: { date: nextWeekEnd },
+            updated: new Date().toISOString()
+          },
+          {
+            id: 'weekly_far',
+            summary: 'Weekly meeting',
+            start: { dateTime: twoYearsAhead.toISOString() },
+            end: { dateTime: twoYearsAheadEnd.toISOString() },
+            updated: new Date().toISOString()
+          }
+        ],
+        nextSyncToken: 'fresh-token'
+      }),
+      text: async () => '{}'
+    });
+
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock as typeof fetch;
+
+    const result = await runFullSync(undefined, context);
+
+    expect(result.syncedCount).toBe(0);
+    expect(createTask).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(stateSet).toHaveBeenCalledWith('google-calendar:sync-token:calendar-1', 'fresh-token');
+  });
+
+  describe('moving import window', () => {
+    const day = 24 * 60 * 60 * 1000;
+
+    async function runWithStoredToken(listedAt: string | null) {
+      const stateSet = jest.fn();
+      const context = {
+        userId: 'user-1',
+        installationId: 'installation-1',
+        config: {},
+        data: { createTask: jest.fn(), getTask: jest.fn(), updateTask: jest.fn(), deleteTask: jest.fn() },
+        credentials: {
+          getAccessToken: jest.fn().mockResolvedValue('token'),
+          refreshToken: jest.fn().mockResolvedValue('token-2')
+        },
+        mappings: {
+          list: jest.fn().mockResolvedValue([{ localId: 'project-1', externalId: 'calendar-1', syncStatus: 'SYNCED', metadata: {} }]),
+          findByExternal: jest.fn().mockResolvedValue(null),
+          upsert: jest.fn(),
+          get: jest.fn(),
+          delete: jest.fn()
+        },
+        state: {
+          get: jest.fn().mockImplementation(async (key: string) => {
+            if (key === 'google-calendar:sync-token:calendar-1') return 'stored-token';
+            if (key === 'google-calendar:full-listing-at:calendar-1') return listedAt;
+            return null;
+          }),
+          set: stateSet,
+          delete: jest.fn()
+        },
+        logger: { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() }
+      } as unknown as IntegrationContext;
+
+      const fetchMock = jest.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { forEach: () => {} },
+        json: async () => ({ items: [], nextSyncToken: 'next-token' }),
+        text: async () => '{}'
+      });
+      (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock as typeof fetch;
+
+      await runFullSync(undefined, context);
+
+      const listUrl = new URL(String(fetchMock.mock.calls[0][0]));
+      return { sentToken: listUrl.searchParams.get('syncToken'), stateSet };
+    }
+
+    it('lists the calendar in full once the last full listing is older than 30 days', async () => {
+      const { sentToken, stateSet } = await runWithStoredToken(String(Date.now() - 31 * day));
+
+      expect(sentToken).toBeNull();
+      expect(stateSet).toHaveBeenCalledWith('google-calendar:sync-token:calendar-1', 'next-token');
+      expect(stateSet).toHaveBeenCalledWith('google-calendar:full-listing-at:calendar-1', expect.any(String));
+    });
+
+    it('keeps using the sync token while the last full listing is recent', async () => {
+      const { sentToken, stateSet } = await runWithStoredToken(String(Date.now() - 5 * day));
+
+      expect(sentToken).toBe('stored-token');
+      expect(stateSet).not.toHaveBeenCalledWith('google-calendar:full-listing-at:calendar-1', expect.anything());
+    });
+
+    it('starts the 30 days for a token stored before the window moved', async () => {
+      const { sentToken, stateSet } = await runWithStoredToken(null);
+
+      expect(sentToken).toBe('stored-token');
+      expect(stateSet).toHaveBeenCalledWith('google-calendar:full-listing-at:calendar-1', expect.any(String));
+    });
+  });
+
+  it('drops the mapping when Google refuses to delete a birthday event', async () => {
+    const mappingDelete = jest.fn();
+
+    const context = {
+      userId: 'user-1',
+      installationId: 'installation-1',
+      config: {},
+      data: {
+        getTask: jest.fn().mockResolvedValue({ ...baseTask, deleted: true })
+      },
+      credentials: {
+        getAccessToken: jest.fn().mockResolvedValue('token'),
+        refreshToken: jest.fn().mockResolvedValue('token-2')
+      },
+      mappings: {
+        get: jest
+          .fn()
+          .mockResolvedValueOnce({ localId: 'project-1', externalId: 'calendar-1', syncStatus: 'SYNCED' })
+          .mockResolvedValueOnce({ localId: 'task-1', externalId: 'birthday_20351019', syncStatus: 'SYNCED', metadata: {} }),
+        upsert: jest.fn(),
+        delete: mappingDelete,
+        list: jest.fn(),
+        findByExternal: jest.fn()
+      },
+      state: {
+        get: jest.fn().mockResolvedValue(null),
+        set: jest.fn(),
+        delete: jest.fn()
+      },
+      logger: {
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn()
+      }
+    } as unknown as IntegrationContext;
+
+    const fetchMock = jest.fn().mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      statusText: 'Bad Request',
+      headers: { forEach: () => {} },
+      json: async () => ({}),
+      text: async () => '{"error":{"errors":[{"domain":"calendar","reason":"eventTypeRestriction"}],"code":400}}'
+    });
+
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock as typeof fetch;
+
+    const result = await syncTaskToExternal({ event: 'task.delete', taskId: 'task-1' }, context);
+
+    expect(result.status).toBe('deleted');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(mappingDelete).toHaveBeenCalledWith({ system: 'google-calendar', entity: 'task', localId: 'task-1' });
+  });
+
   it('reads the event title for a Google-originated mapping even after the event was stamped', async () => {
     const getTask = jest.fn().mockResolvedValue({
       id: 'task-1',

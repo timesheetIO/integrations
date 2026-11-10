@@ -15,6 +15,21 @@ interface QuickBooksClientOptions {
   refreshAccessToken: () => Promise<string>;
 }
 
+// Intuit fault code for "This feature is not included in your QuickBooks Online
+// <plan> subscription", returned for time activities on plans without time tracking.
+const FEATURE_NOT_IN_PLAN_CODE = '"code":"-16972"';
+
+/** The connected QuickBooks company's plan has no time tracking. No retry can succeed. */
+export class QuickBooksPlanError extends Error {
+  constructor() {
+    super(
+      'Your QuickBooks Online plan does not include time tracking, so time entries cannot be synced. ' +
+        'Upgrade the QuickBooks plan or disconnect this integration.'
+    );
+    this.name = 'QuickBooksPlanError';
+  }
+}
+
 export class QuickBooksClient {
   private static readonly REQUEST_TIMEOUT_MS = 30_000;
   private static readonly PAGE_SIZE = 1000;
@@ -186,6 +201,9 @@ export class QuickBooksClient {
 
     if (!response.ok) {
       const errorBody = await response.text();
+      if (errorBody.replace(/\s/g, '').includes(FEATURE_NOT_IN_PLAN_CODE)) {
+        throw new QuickBooksPlanError();
+      }
       throw new Error(`QuickBooks API ${method} ${path} failed (${response.status}): ${errorBody}`);
     }
 

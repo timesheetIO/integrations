@@ -1,4 +1,5 @@
 import { defineHandler, MappingRecord, SyncModeInput } from '@timesheet/integration-sdk';
+import { QuickBooksPlanError } from '../lib/quickbooksClient';
 import { QuickBooksConfig, SyncInput } from '../lib/types';
 import { QuickBooksSyncResult, syncTaskToQuickBooks } from '../lib/taskSync';
 
@@ -68,6 +69,11 @@ export const handleSyncBatch = defineHandler<SyncModeInput, QuickBooksSyncResult
           context.logger.debug('Change skipped', { entityId: change.entityId, reason: result.details?.reason });
         }
       } catch (err) {
+        // Every other change in the batch would fail the same way: stop here
+        // so the execution fails with the one message the user can act on.
+        if (err instanceof QuickBooksPlanError) {
+          throw err;
+        }
         context.logger.error('Failed to sync change', {
           entityId: change.entityId,
           op: change.op,

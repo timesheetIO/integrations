@@ -1,4 +1,5 @@
 import { IntegrationContext, TaskDto } from '@timesheet/integration-sdk';
+import { handleSyncBatch } from '../quickbooks/src/handlers/handleSyncBatch';
 import { handleWebhook } from '../quickbooks/src/handlers/handleWebhook';
 import { syncTaskToExternal } from '../quickbooks/src/handlers/syncTaskToExternal';
 
@@ -112,6 +113,74 @@ describe('quickbooks plugin', () => {
       localId: 'task-1',
       externalId: 'ta-1'
     }));
+  });
+
+  it('fails the whole batch with a clear message when the QuickBooks plan has no time tracking', async () => {
+    const list = jest.fn().mockImplementation(async ({ entity }: { entity: string }) => {
+      if (entity === 'project') return [{ localId: 'project-1', externalId: 'customer-1', syncStatus: 'SYNCED' }];
+      if (entity === 'user') return [{ localId: 'user-1', externalId: 'employee-1', syncStatus: 'SYNCED' }];
+      return [];
+    });
+
+    const context = {
+      userId: 'user-1',
+      installationId: 'installation-1',
+      config: {},
+      data: {
+        getTask: jest.fn().mockResolvedValue(baseTask)
+      },
+      credentials: {
+        getAccessToken: jest.fn().mockResolvedValue('token'),
+        refreshToken: jest.fn().mockResolvedValue('token-2'),
+        getConnectionInfo: jest.fn().mockResolvedValue({ connected: true, provider: 'quickbooks', accountId: 'realm-1' })
+      },
+      mappings: {
+        get: jest.fn().mockResolvedValue(null),
+        delete: jest.fn(),
+        findByExternal: jest.fn(),
+        list,
+        upsert: jest.fn()
+      },
+      state: {
+        get: jest.fn(),
+        set: jest.fn(),
+        delete: jest.fn()
+      },
+      logger: {
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn()
+      }
+    } as unknown as IntegrationContext;
+
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      statusText: 'Bad Request',
+      headers: { forEach: () => {} },
+      json: async () => ({}),
+      text: async () =>
+        '{"Fault":{"Error":[{"Message":"We\'re sorry. This feature is not included in your QuickBooks Online Simple Start subscription.","Detail":"","code":"-16972"}],"type":"ValidationFault"}}'
+    });
+
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock as typeof fetch;
+
+    await expect(
+      handleSyncBatch(
+        {
+          sinceVersion: 1,
+          headVersion: 3,
+          hasMore: false,
+          changes: [
+            { entityType: 'task', entityId: 'task-1', op: 'UPSERT', item: baseTask },
+            { entityType: 'task', entityId: 'task-2', op: 'UPSERT', item: { ...baseTask, id: 'task-2' } }
+          ]
+        } as unknown as Parameters<typeof handleSyncBatch>[0],
+        context
+      )
+    ).rejects.toThrow('does not include time tracking');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('imports webhook time-activity updates into Timesheet tasks', async () => {

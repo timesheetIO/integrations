@@ -84,6 +84,16 @@ export class OutlookCalendarClient {
     return result;
   }
 
+  /** False for calendars Outlook only lets the user read (Birthdays, holidays, shared without edit rights). */
+  async canEditCalendar(calendarId: string): Promise<boolean> {
+    const calendar = await this.request<OutlookCalendar>(
+      'GET',
+      `/me/calendars/${encodeURIComponent(calendarId)}`,
+      { $select: 'canEdit' }
+    );
+    return calendar?.canEdit ?? false;
+  }
+
   /**
    * One page of the calendar's change feed. Without a link this starts a new
    * feed over the window; afterwards pass the nextLink or deltaLink returned.

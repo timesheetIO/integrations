@@ -165,7 +165,19 @@ export async function syncTaskToOutlook(
 
   if (task.deleted) {
     if (taskMapping?.externalId) {
-      await client.deleteEvent(taskMapping.externalId);
+      try {
+        await client.deleteEvent(taskMapping.externalId);
+      } catch (err) {
+        // Outlook refuses to delete events of a read-only calendar. Retrying
+        // cannot succeed, so the task goes and the event stays in the calendar.
+        if (!(err instanceof GraphRequestError && err.status === 403) || await client.canEditCalendar(calendarId)) {
+          throw err;
+        }
+        context.logger.info('Outlook calendar is read-only, dropping the mapping of the deleted task', {
+          calendarId,
+          eventId: taskMapping.externalId
+        });
+      }
       await context.mappings.delete({ system: SYSTEM, entity: TASK_ENTITY, localId: task.id });
       removeTaskMappingFromCaches(caches, taskMapping);
       return { system: SYSTEM, status: 'deleted', syncedCount: 1 };
