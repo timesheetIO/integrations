@@ -13,6 +13,7 @@ export interface GoogleCalendarDateTime {
 export interface GoogleCalendarEvent {
   id: string;
   status?: string;
+  eventType?: string;
   summary?: string;
   description?: string;
   location?: string;

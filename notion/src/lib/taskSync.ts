@@ -10,6 +10,7 @@ import {
   getLastUpdateMillis,
   isAlreadySyncedLocalChange,
   isStaleExternalChange,
+  isStateConflictError,
   releaseStateLock,
   syncMetadataStamp,
   tryAcquireStateLock
@@ -596,6 +597,26 @@ export async function runNotionFullSync(
   };
 }
 
+// A handshake carries no proof of origin, so the first secret wins: a later
+// handshake may repeat the stored secret but never replace it. Otherwise anyone
+// who learns the endpoint URL could install their own secret and sign forged
+// events. Returns false when a different secret is already stored.
+async function claimWebhookSecret(context: IntegrationContext<NotionConfig>, secret: string): Promise<boolean> {
+  const stored = await context.state.get<string>(WEBHOOK_SECRET_STATE_KEY);
+  if (stored) {
+    return stored === secret;
+  }
+  try {
+    await context.state.set(WEBHOOK_SECRET_STATE_KEY, secret, { ifAbsent: true });
+    return true;
+  } catch (err) {
+    if (isStateConflictError(err)) {
+      return (await context.state.get<string>(WEBHOOK_SECRET_STATE_KEY)) === secret;
+    }
+    throw err;
+  }
+}
+
 export async function handleNotionWebhook(
   input: SyncInput,
   context: IntegrationContext<NotionConfig>
@@ -606,7 +627,10 @@ export async function handleNotionWebhook(
   // verification_token, which becomes the HMAC secret for all later events.
   const verificationToken = payload?.verification_token;
   if (typeof verificationToken === 'string' && verificationToken.length > 0) {
-    await context.state.set(WEBHOOK_SECRET_STATE_KEY, verificationToken);
+    if (!(await claimWebhookSecret(context, verificationToken))) {
+      context.logger.warn('Notion webhook handshake rejected: a different verification token is already stored');
+      return { system: SYSTEM, status: 'rejected', syncedCount: 0, details: { reason: 'secret-already-set' } };
+    }
     return { system: SYSTEM, status: 'handshake', syncedCount: 0, details: { hasToken: true } };
   }
 
@@ -1096,16 +1120,14 @@ function buildTimeLogPageProperties(
   return properties;
 }
 
-// Net worked hours: duration/durationBreak are seconds (see the platform-wide
-// `duration - durationBreak` convention).
+// Full tracked hours, breaks included: the batch item carries no break total,
+// and every path must report the same figure. task.duration is in seconds.
 function computeHours(task: TaskDto, start: Date, end: Date): number {
-  const breakSeconds = Number(task.durationBreak ?? 0);
-  const safeBreak = Number.isFinite(breakSeconds) && breakSeconds > 0 ? breakSeconds : 0;
-  const gross = Number(task.duration);
-  const netSeconds = Number.isFinite(gross) && gross > 0
-    ? Math.max(0, gross - safeBreak)
-    : Math.max(0, Math.round((end.getTime() - start.getTime()) / 1000) - safeBreak);
-  return Math.round((netSeconds / 3600) * 100) / 100;
+  const duration = Number(task.duration);
+  const seconds = Number.isFinite(duration) && duration > 0
+    ? duration
+    : Math.max(0, Math.round((end.getTime() - start.getTime()) / 1000));
+  return Math.round((seconds / 3600) * 100) / 100;
 }
 
 function readTitle(page: NotionPage, props: ResolvedDatabaseProps): string {

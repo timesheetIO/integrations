@@ -1273,17 +1273,16 @@ function buildTodoPayload(todo: ToDoDto): Record<string, unknown> {
 }
 
 function computeDurationMinutes(task: TaskDto): number | null {
-  // task.duration and task.durationBreak are in seconds; net worked seconds
-  // convert to whole minutes with a /60 divisor.
+  // The full tracked time is sent, breaks included: the batch item carries no
+  // break total, and every path must report the same figure. task.duration is
+  // in seconds.
   if (typeof task.duration === 'number' && task.duration > 0) {
-    return Math.max(0, Math.round((task.duration - (task.durationBreak ?? 0)) / 60));
+    return Math.round(task.duration / 60);
   }
   const start = parseDate(task.startDateTime);
   const end = parseDate(task.endDateTime);
   if (!start || !end) return null;
-  // The start/end delta is milliseconds; durationBreak (seconds) is scaled to
-  // match before subtracting.
-  const ms = end.getTime() - start.getTime() - (task.durationBreak ?? 0) * 1000;
+  const ms = end.getTime() - start.getTime();
   return ms <= 0 ? 0 : Math.round(ms / 60_000);
 }
 

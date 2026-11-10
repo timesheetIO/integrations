@@ -27,6 +27,17 @@ const TASK_ENTITY = 'task';
 // Google omits nextSyncToken from filtered listings, which permanently breaks
 // incremental sync (every webhook then loops through the expired-token path).
 const IMPORT_CUTOFF_MS = 365 * 24 * 60 * 60 * 1000;
+// Upper bound for imports. `singleEvents` expands a repeating event with no
+// end date into one instance per occurrence for decades, so events that start
+// later than this are not imported.
+const IMPORT_FUTURE_LIMIT_MS = 365 * 24 * 60 * 60 * 1000;
+// The import window only moves when the calendar is listed in full: the sync
+// token just reports changes. A token older than this is set aside for one
+// full listing, so events that have come inside the window are imported.
+const FULL_LISTING_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+// Google's own birthday events (from contacts). They repeat every year without
+// an end and Google rejects every write to them, so they are never imported.
+const EVENT_TYPE_BIRTHDAY = 'birthday';
 const EVENT_IMPORT_LOCK_TTL_SECONDS = 60 * 60;
 // Where the mapped event was created. Google-originated events keep their own
 // title (synced with the task description); Timesheet-originated events show
@@ -137,7 +148,19 @@ export async function syncTaskToGoogleCalendar(
   if (task.deleted) {
     if (taskMapping?.externalId) {
       const mappedCalendarId = getMappedCalendarId(taskMapping) ?? externalCalendarId;
-      await client.deleteEvent(mappedCalendarId, taskMapping.externalId);
+      try {
+        await client.deleteEvent(mappedCalendarId, taskMapping.externalId);
+      } catch (err) {
+        // Google never lets an API client delete a birthday event. Retrying
+        // cannot succeed, so the task goes and the event stays in the calendar.
+        if (!String(err).includes('eventTypeRestriction')) {
+          throw err;
+        }
+        context.logger.info('Google Calendar event cannot be deleted, dropping its mapping', {
+          calendarId: mappedCalendarId,
+          eventId: taskMapping.externalId
+        });
+      }
       await context.mappings.delete({
         system: SYSTEM,
         entity: TASK_ENTITY,
@@ -409,9 +432,20 @@ async function syncCalendar(
     // Note: legacy plugin versions stored a syncToken in the project mapping
     // metadata. It is never refreshed and therefore permanently expired —
     // falling back to it guaranteed a 410 round-trip on every sync.
-    const syncToken = options.forceFullResync
+    let syncToken = options.forceFullResync
       ? undefined
       : (await context.state.get<string>(syncStateKey)) ?? undefined;
+
+    if (syncToken) {
+      const listedAtKey = getFullListingTimeStateKey(calendarId);
+      const listedAt = Number(await context.state.get<string>(listedAtKey));
+      if (!Number.isFinite(listedAt) || listedAt <= 0) {
+        // Tokens stored before the window started moving: the clock starts now.
+        await context.state.set(listedAtKey, String(Date.now()));
+      } else if (Date.now() - listedAt > FULL_LISTING_MAX_AGE_MS) {
+        syncToken = undefined;
+      }
+    }
 
     try {
       return await fetchAndSyncEvents(
@@ -504,6 +538,9 @@ async function fetchAndSyncEvents(
 
   if (nextSyncToken) {
     await context.state.set(syncStateKey, nextSyncToken);
+    if (!syncToken) {
+      await context.state.set(getFullListingTimeStateKey(calendarId), String(Date.now()));
+    }
   }
 
   return syncedCount;
@@ -547,6 +584,15 @@ async function syncSingleGoogleEvent(
 
   if (!taskMapping?.localId) {
     if (localTaskIdFromExtendedProperties) {
+      return false;
+    }
+
+    if (event.eventType === EVENT_TYPE_BIRTHDAY) {
+      return false;
+    }
+
+    const startMs = Date.parse(dateRange.startDateTime);
+    if (Number.isFinite(startMs) && startMs > Date.now() + IMPORT_FUTURE_LIMIT_MS) {
       return false;
     }
 
@@ -957,6 +1003,10 @@ function getTaskDescriptionFromEvent(event: GoogleCalendarEvent, origin?: string
 
 function getSyncTokenStateKey(calendarId: string): string {
   return `google-calendar:sync-token:${calendarId}`;
+}
+
+function getFullListingTimeStateKey(calendarId: string): string {
+  return `google-calendar:full-listing-at:${calendarId}`;
 }
 
 function getSyncLockStateKey(calendarId: string): string {

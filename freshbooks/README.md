@@ -42,7 +42,7 @@ Requested scopes: `user:profile:read`, `user:time_entries:read`, `user:time_entr
 
 ### Webhook
 
-FreshBooks callbacks are registered per account. **Register Webhooks** creates a single `time_entry` callback pointing at the plugin's webhook endpoint. FreshBooks then delivers a verification `verifier` to that endpoint; the handler stores it (it becomes the HMAC secret) and confirms the callback. Subsequent deliveries are authenticated with the `X-FreshBooks-Hmac-SHA256` signature over the raw body. The Scheduled Full Sync and Manual Sync remain the reliable inbound path if callbacks are not registered.
+FreshBooks callbacks are registered per account. **Register Webhooks** creates a single `time_entry` callback pointing at the plugin's webhook endpoint. FreshBooks then delivers a verification `verifier` to that endpoint. The handler echoes it back and stores it as the HMAC secret only once FreshBooks reports the callback as verified, so a verifier posted by anyone else is refused. Pressing **Register Webhooks** again has FreshBooks resend the verifier of an unverified callback, and replaces a verified callback whose verifier is no longer stored. Subsequent deliveries are authenticated with the `X-FreshBooks-Hmac-SHA256` signature over the raw body. The Scheduled Full Sync and Manual Sync remain the reliable inbound path if callbacks are not registered.
 
 ### Echo suppression
 

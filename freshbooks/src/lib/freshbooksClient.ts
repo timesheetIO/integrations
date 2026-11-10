@@ -263,6 +263,17 @@ export class FreshBooksClient {
     );
   }
 
+  // Ask FreshBooks to deliver the verifier of an unverified callback again.
+  async resendCallbackVerification(callbackId: string): Promise<void> {
+    const aid = await this.accountId();
+    await this.request<unknown>(
+      'PUT',
+      `/events/account/${encodeURIComponent(aid)}/events/callbacks/${encodeURIComponent(callbackId)}`,
+      undefined,
+      { callback: { resend: true } }
+    );
+  }
+
   async deleteCallback(callbackId: string): Promise<void> {
     const aid = await this.accountId();
     await this.request<unknown>(
