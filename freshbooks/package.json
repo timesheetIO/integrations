@@ -1,6 +1,6 @@
 {
   "name": "@timesheet/plugin-freshbooks",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Synchronize time entries with FreshBooks",
   "homepage": "https://timesheet.io/en/integrations",
   "repository": {
