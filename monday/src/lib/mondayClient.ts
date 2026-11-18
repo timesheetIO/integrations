@@ -16,7 +16,7 @@ interface MondayClientOptions {
 interface GraphQLError {
   message: string;
   status?: number;
-  extensions?: { code?: string };
+  extensions?: { code?: string; error_data?: unknown };
 }
 
 interface GraphQLResponse<T> {
@@ -416,7 +416,16 @@ export class MondayClient {
 
     const parsed = JSON.parse(text) as GraphQLResponse<T>;
     if (parsed.errors?.length) {
-      const message = parsed.errors.map((err) => err.message).join('; ');
+      // error_data names the offending value (the column id, for example); without it the log
+      // only says that something on the board is wrong.
+      const message = parsed.errors
+        .map((err) => {
+          const data = err.extensions?.error_data;
+          return data && typeof data === 'object' && Object.keys(data).length > 0
+            ? `${err.message} ${JSON.stringify(data)}`
+            : err.message;
+        })
+        .join('; ');
       // monday.com surfaces auth issues as a GraphQL error; trigger refresh once.
       const unauthorized = parsed.errors.some(
         (err) => err.status === 401 || err.extensions?.code === 'UserUnauthorizedException'

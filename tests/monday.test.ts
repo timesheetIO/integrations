@@ -1,7 +1,7 @@
 import { IntegrationContext, MappingRecord } from '@timesheet/integration-sdk';
 
 import { runFullSync } from '../monday/src/handlers/runFullSync';
-import { resetSharedClient } from '../monday/src/lib/taskSync';
+import { resetSharedClient, syncTodoToMonday } from '../monday/src/lib/taskSync';
 
 const projectMapping: MappingRecord = {
   localId: 'project-1',
@@ -74,5 +74,112 @@ describe('monday Sync Now pages the local todos and time entries', () => {
       ]);
       expect(list.mock.calls[0][0]).not.toHaveProperty('count');
     }
+  });
+});
+
+describe('monday closed todos', () => {
+  const todoMapping: MappingRecord = { localId: 'todo-1', externalId: 'item-1', syncStatus: 'SYNCED', metadata: {} };
+  const closedTodo = {
+    id: 'todo-1',
+    name: 'Write the brief',
+    status: 1,
+    dueDate: '2026-11-20T01:00:00+01:00',
+    lastUpdate: 2,
+    project: { id: 'project-1' }
+  };
+
+  /**
+   * monday.com answering one board: its columns, and every column write recorded.
+   * `missing` are column ids monday refuses, the way it does for a deleted column.
+   */
+  const mondayBoard = (columns: unknown[], missing: string[] = []) => {
+    const writes: Array<Record<string, unknown>> = [];
+    let columnLists = 0;
+    (globalThis as unknown as { fetch: unknown }).fetch = jest.fn(async (_url: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { query: string; variables: Record<string, unknown> };
+      let answer: unknown;
+      if (body.query.includes('columns { id title type }')) {
+        columnLists++;
+        answer = { data: { boards: [{ columns }] } };
+      } else if (body.query.includes('create_column')) {
+        answer = { data: { create_column: { id: `new-${body.variables.title}`, type: body.variables.columnType } } };
+      } else {
+        const values = JSON.parse(String(body.variables.columnValues)) as Record<string, unknown>;
+        const refused = Object.keys(values).find((id) => missing.includes(id));
+        if (refused) {
+          answer = {
+            errors: [
+              {
+                message: "This column ID doesn't exist for the board",
+                extensions: { code: 'InvalidColumnIdException', error_data: { column_id: refused } }
+              }
+            ]
+          };
+        } else {
+          writes.push(values);
+          answer = { data: { change_multiple_column_values: { id: 'item-1', name: 'Write the brief' } } };
+        }
+      }
+      return { ok: true, status: 200, text: async () => JSON.stringify(answer) };
+    });
+    return { writes, columnLists: () => columnLists };
+  };
+
+  const context = (cachedColumns: unknown = null) => {
+    const ctx = buildContext({}) as unknown as {
+      mappings: { get: jest.Mock };
+      state: { get: jest.Mock; delete: jest.Mock };
+    };
+    ctx.mappings.get.mockImplementation(async (input: { entity: string }) =>
+      input.entity === 'project' ? projectMapping : input.entity === 'todo' ? todoMapping : null
+    );
+    let cache = cachedColumns;
+    ctx.state.get.mockImplementation(async () => cache);
+    ctx.state.delete.mockImplementation(async () => {
+      cache = null;
+    });
+    return ctx as unknown as IntegrationContext;
+  };
+
+  const dateColumns = [
+    { id: 'date_start', title: 'Timesheet Start', type: 'date' },
+    { id: 'date_end', title: 'Timesheet End', type: 'date' },
+    { id: 'person', title: 'Owner', type: 'people' }
+  ];
+
+  it('marks the board status column Done, whatever its id', async () => {
+    const board = mondayBoard([...dateColumns, { id: 'project_status', title: 'Status', type: 'status' }]);
+
+    const result = await syncTodoToMonday({ todoId: 'todo-1', item: closedTodo } as never, context());
+
+    expect(result.status).toBe('synced');
+    expect(board.writes[0]).toMatchObject({ project_status: { label: 'Done' } });
+    expect(board.writes[0]).not.toHaveProperty('status');
+  });
+
+  it('sends no status to a board without a status column', async () => {
+    // Before, every closed todo sent `status` and monday refused the whole write, every night.
+    const board = mondayBoard(dateColumns, ['status']);
+
+    const result = await syncTodoToMonday({ todoId: 'todo-1', item: closedTodo } as never, context());
+
+    expect(result.status).toBe('synced');
+    expect(board.writes[0]).toMatchObject({ date_end: expect.anything() });
+  });
+
+  it('looks the columns up again when a cached column was deleted on the board', async () => {
+    // The cache still holds the Timesheet End column the user deleted on monday.com.
+    const board = mondayBoard(
+      [{ id: 'date_start', title: 'Timesheet Start', type: 'date' }, { id: 'person', title: 'Owner', type: 'people' }],
+      ['date_end']
+    );
+    const ctx = context({ dateStartId: 'date_start', dateEndId: 'date_end', personId: 'person' });
+
+    const result = await syncTodoToMonday({ todoId: 'todo-1', item: closedTodo } as never, ctx);
+
+    expect(result.status).toBe('synced');
+    expect(board.columnLists()).toBe(1);
+    expect(board.writes[0]).toMatchObject({ 'new-Timesheet End': expect.anything() });
+    expect(board.writes[0]).not.toHaveProperty('date_end');
   });
 });

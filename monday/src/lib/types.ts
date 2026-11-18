@@ -16,6 +16,8 @@ export interface MondayBoardColumns {
   dateStartId?: string;
   dateEndId?: string;
   personId?: string;
+  /** The board's status column; absent when the board has none. */
+  statusId?: string;
 }
 
 export interface MondayWorkspace {

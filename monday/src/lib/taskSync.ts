@@ -33,7 +33,8 @@ const SYNC_STATE_KEY = 'monday:last-sync-time';
 // the TTL (not released on success) so duplicate webhook deliveries stay
 // suppressed until the new mapping is visible everywhere.
 const IMPORT_LOCK_TTL_SECONDS = 60 * 60;
-const STATUS_COLUMN_ID = 'status';
+/** The id monday gives a board's first status column; later ones get `status_1`, `project_status`, ... */
+const DEFAULT_STATUS_COLUMN_ID = 'status';
 
 // Titles used when the plugin has to create its own date columns. monday.com
 // generates random ids for new columns, but the title is what users see.
@@ -53,7 +54,8 @@ const SUBITEMS_COLUMN_TYPE = 'subtasks';
 const DEFAULT_ITEM_NAME_TEMPLATE = 'Timesheet entry {startDate} {startTime}–{endTime}';
 
 function boardColumnsCacheKey(boardId: string): string {
-  return `monday:columns:${boardId}`;
+  // v2: entries carry statusId. Entries from before it would never look the status column up.
+  return `monday:columns:v2:${boardId}`;
 }
 
 function subitemsColumnCacheKey(boardId: string): string {
@@ -232,22 +234,27 @@ export async function syncTaskToMonday(
 
   if (taskMapping?.externalId) {
     const updateBoardId = storedSubitemBoard || projectBoardId;
-    const cols = await ensureBoardColumns(context, client, updateBoardId);
-    const columnValues = buildColumnValuesOrSkip(task, externalUserId, cols, context);
-    if (!columnValues) {
-      return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'invalid-task-data', taskId: task.id } };
-    }
-    try {
-      external = await client.updateItem(taskMapping.externalId, updateBoardId, name, columnValues);
-    } catch (err) {
-      if (String(err).toLowerCase().includes('not found')) {
-        external = parentItemId
-          ? await createSubitemWithColumns(client, context, parentItemId, name, task, externalUserId, projectBoardId)
-          : await createItemWithColumns(client, context, projectBoardId, name, task, externalUserId);
-      } else {
+    const externalId = taskMapping.externalId;
+    const updated = await withBoardColumns(context, client, updateBoardId, async (cols) => {
+      const columnValues = buildColumnValuesOrSkip(task, externalUserId, cols, context);
+      if (!columnValues) {
+        return null;
+      }
+      try {
+        return await client.updateItem(externalId, updateBoardId, name, columnValues);
+      } catch (err) {
+        if (String(err).toLowerCase().includes('not found')) {
+          return parentItemId
+            ? await createSubitemWithColumns(client, context, parentItemId, name, task, externalUserId, projectBoardId)
+            : await createItemWithColumns(client, context, projectBoardId, name, task, externalUserId);
+        }
         throw err;
       }
+    });
+    if (!updated) {
+      return { system: SYSTEM, status: 'skipped', syncedCount: 0, details: { reason: 'invalid-task-data', taskId: task.id } };
     }
+    external = updated;
   } else if (parentItemId) {
     external = await createSubitemWithColumns(client, context, parentItemId, name, task, externalUserId, projectBoardId);
   } else {
@@ -347,23 +354,20 @@ export async function syncTodoToMonday(
   }
 
   const name = (todo.name?.trim() || `Timesheet todo ${todo.id}`).slice(0, 255);
-  const cols = await ensureBoardColumns(context, client, boardId);
-  const columnValues = buildTodoColumnValues(todo, cols);
-
-  let external: MondayItem;
-  if (todoMapping?.externalId) {
-    try {
-      external = await client.updateItem(todoMapping.externalId, boardId, name, columnValues);
-    } catch (err) {
-      if (String(err).toLowerCase().includes('not found')) {
-        external = await client.createItem(boardId, name, columnValues);
-      } else {
+  const external = await withBoardColumns(context, client, boardId, async (cols) => {
+    const columnValues = buildTodoColumnValues(todo, cols);
+    if (todoMapping?.externalId) {
+      try {
+        return await client.updateItem(todoMapping.externalId, boardId, name, columnValues);
+      } catch (err) {
+        if (String(err).toLowerCase().includes('not found')) {
+          return client.createItem(boardId, name, columnValues);
+        }
         throw err;
       }
     }
-  } else {
-    external = await client.createItem(boardId, name, columnValues);
-  }
+    return client.createItem(boardId, name, columnValues);
+  });
 
   if (!external?.id) {
     return { system: SYSTEM, status: 'failed', syncedCount: 0, details: { reason: 'missing-external-id' } };
@@ -897,7 +901,7 @@ async function syncInboundTodoFromItem(
     ? await ensureBoardColumns(context, getOrCreateClient(context), itemBoardId)
     : {};
   const dueDate = extractDueDate(external, cols);
-  const status = mapMondayStatusToLocal(external.column_values);
+  const status = mapMondayStatusToLocal(external.column_values, cols.statusId);
 
   if (!todoMapping?.localId) {
     // Import lock: a webhook delivery racing a full sync must not create the
@@ -1205,13 +1209,14 @@ async function createSubitemWithColumns(
   if (!subitemBoardId) {
     return created;
   }
-  const cols = await ensureBoardColumns(context, client, subitemBoardId);
-  const columnValues = buildColumnValuesOrSkip(task, externalUserId, cols, context);
-  if (!columnValues || Object.keys(columnValues).length === 0) {
-    return created;
-  }
   try {
-    return await client.updateItem(created.id, subitemBoardId, name, columnValues);
+    return await withBoardColumns(context, client, subitemBoardId, async (cols) => {
+      const columnValues = buildColumnValuesOrSkip(task, externalUserId, cols, context);
+      if (!columnValues || Object.keys(columnValues).length === 0) {
+        return created;
+      }
+      return client.updateItem(created.id, subitemBoardId, name, columnValues);
+    });
   } catch (err) {
     context.logger.warn('Failed to set subitem column values after create', { itemId: created.id, error: String(err) });
     return created;
@@ -1226,9 +1231,10 @@ async function createItemWithColumns(
   task: TaskDto,
   externalUserId: string | undefined
 ): Promise<MondayItem> {
-  const cols = await ensureBoardColumns(context, client, boardId);
-  const columnValues = buildColumnValuesOrSkip(task, externalUserId, cols, context);
-  return client.createItem(boardId, name, columnValues ?? {});
+  return withBoardColumns(context, client, boardId, (cols) => {
+    const columnValues = buildColumnValuesOrSkip(task, externalUserId, cols, context);
+    return client.createItem(boardId, name, columnValues ?? {});
+  });
 }
 
 function buildTodoColumnValues(todo: ToDoDto, cols: MondayBoardColumns): Record<string, unknown> {
@@ -1243,9 +1249,10 @@ function buildTodoColumnValues(todo: ToDoDto, cols: MondayBoardColumns): Record<
 
   // monday.com status columns are workspace-defined. We only mark "closed"
   // ToDos by sending the canonical "Done" label; "open" is left untouched so
-  // the workspace's default status is preserved.
-  if (typeof todo.status === 'number' && todo.status === 1) {
-    values[STATUS_COLUMN_ID] = { label: 'Done' };
+  // the workspace's default status is preserved. A board without a status
+  // column gets no status: sending one fails the whole write.
+  if (typeof todo.status === 'number' && todo.status === 1 && cols.statusId) {
+    values[cols.statusId] = { label: 'Done' };
   }
 
   return values;
@@ -1259,8 +1266,11 @@ function extractDueDate(external: MondayItem, cols: MondayBoardColumns): string 
   return due ? new Date(due).toISOString() : undefined;
 }
 
-function mapMondayStatusToLocal(columns: MondayItem['column_values']): number | undefined {
-  const status = columns?.find((column) => column.id === STATUS_COLUMN_ID);
+function mapMondayStatusToLocal(
+  columns: MondayItem['column_values'],
+  statusId: string = DEFAULT_STATUS_COLUMN_ID
+): number | undefined {
+  const status = columns?.find((column) => column.id === statusId);
   const label = (status?.text ?? '').trim().toLowerCase();
   if (!label) {
     return undefined;
@@ -1391,16 +1401,53 @@ async function ensureBoardColumns(
     }
   }
 
+  // `color` is the type name of status columns before API version 2023-10.
+  const statusColumns = columns.filter((c) => c.type === 'status' || c.type === 'color');
+  const statusCol = statusColumns.find((c) => c.id === DEFAULT_STATUS_COLUMN_ID) ?? statusColumns[0];
+
   const result: MondayBoardColumns = {
     dateStartId: startCol?.id,
     dateEndId: endCol?.id,
-    personId: peopleColumns[0]?.id
+    personId: peopleColumns[0]?.id,
+    statusId: statusCol?.id
   };
 
   if (result.dateStartId && result.dateEndId) {
     await context.state.set(cacheKey, result);
   }
   return result;
+}
+
+/** monday's answer when a column id in the payload is not on the board. */
+function isMissingColumnError(err: unknown): boolean {
+  return /column id doesn't exist|InvalidColumnIdException/i.test(String(err));
+}
+
+/**
+ * Runs a write with the board's cached column ids. A column deleted on the board after
+ * we cached it makes monday refuse the whole write, every time, so on that answer the
+ * columns are looked up again (re-creating our own date columns) and the write retried once.
+ */
+async function withBoardColumns<T>(
+  context: IntegrationContext<MondayConfig>,
+  client: MondayClient,
+  boardId: string,
+  write: (cols: MondayBoardColumns) => Promise<T>
+): Promise<T> {
+  const cols = await ensureBoardColumns(context, client, boardId);
+  try {
+    return await write(cols);
+  } catch (err) {
+    if (!isMissingColumnError(err)) {
+      throw err;
+    }
+    context.logger.warn('monday.com refused a cached column id, looking the board columns up again', {
+      boardId,
+      error: String(err)
+    });
+    await context.state.delete(boardColumnsCacheKey(boardId));
+    return write(await ensureBoardColumns(context, client, boardId));
+  }
 }
 
 interface RawColumnValue {
